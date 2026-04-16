@@ -26,7 +26,7 @@ use cubek::{
             BatchLayout, BlockScaledLayout, GlobalLayout, GlobalLayoutConfig, GlobalLayoutExpand,
             GlobalScaleLayout, GlobalScaleLayoutExpand, NoopLayout,
         },
-        launch::{BatchedCoords, MatmulArgs},
+        launch::{BatchedCoords, MatmulArgs, Scale},
     },
     std::MatrixLayout,
 };
@@ -157,6 +157,22 @@ impl MatmulArgs for FusedMatmulArgs {
         batch: usize,
     ) -> usize {
         state.b_batch.to_source_pos(batch)
+    }
+
+    // Fusion path bundles scales into the `QuantizedView` returned by
+    // `view_lhs`/`view_rhs` (see `global_view` / `create_quant_view`); there's
+    // no separate scales side-channel to expose here. Path B's side-channel
+    // plumbing only fires on the TMA args impl.
+    fn view_lhs_scale<Lhs: CubePrimitive, Rhs: CubePrimitive, EO: CubePrimitive>(
+        _state: &Self::State<Lhs, Rhs, EO>,
+    ) -> ComptimeOption<View<Scale, BatchedCoords>> {
+        ComptimeOption::new_None()
+    }
+
+    fn view_rhs_scale<Lhs: CubePrimitive, Rhs: CubePrimitive, EO: CubePrimitive>(
+        _state: &Self::State<Lhs, Rhs, EO>,
+    ) -> ComptimeOption<View<Scale, BatchedCoords>> {
+        ComptimeOption::new_None()
     }
 
     fn view_acc<Lhs: CubePrimitive, Rhs: CubePrimitive, EO: CubePrimitive>(

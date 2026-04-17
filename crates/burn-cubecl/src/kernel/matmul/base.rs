@@ -101,15 +101,17 @@ pub(crate) fn launch_matmul<R: CubeRuntime>(
             let scheme = *lhs.scheme();
             let data_dtype = data.dtype;
             let scale_dtype = scale.dtype;
+            let tensor_scale = lhs.qparams.as_ref().and_then(|q| q.tensor_scale);
             (
                 out_dtype,
-                InputBinding::quantized(
+                InputBinding::quantized_with_tensor_scale(
                     data.binding(),
                     scale.binding(),
                     lhs.meta.shape().clone(),
                     scheme,
                     data_dtype.into(),
                     scale_dtype.into(),
+                    tensor_scale,
                 ),
             )
         }
@@ -137,15 +139,17 @@ pub(crate) fn launch_matmul<R: CubeRuntime>(
                 let scheme = *rhs.scheme();
                 let data_dtype = data.dtype;
                 let scale_dtype = scale.dtype;
+                let tensor_scale = rhs.qparams.as_ref().and_then(|q| q.tensor_scale);
                 (
                     out_dtype,
-                    InputBinding::quantized(
+                    InputBinding::quantized_with_tensor_scale(
                         data.binding(),
                         scale.binding(),
                         rhs.meta.shape().clone(),
                         scheme,
                         data_dtype.into(),
                         scale_dtype.into(),
+                        tensor_scale,
                     ),
                 )
             }

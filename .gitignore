@@ -20,3 +20,4 @@ uv.lock
 # Nix direnv
 .envrc
 .direnv
+.docs-cache/

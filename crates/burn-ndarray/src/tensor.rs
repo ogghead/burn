@@ -843,6 +843,7 @@ mod tests {
             .with_store(QuantStore::Native);
         let qparams = QuantizationParametersPrimitive {
             scales: B::float_from_data(TensorData::from([scale]), &device),
+            tensor_scale: None,
         };
         let qtensor: NdArrayQTensor = B::quantize(tensor, &scheme, qparams);
 

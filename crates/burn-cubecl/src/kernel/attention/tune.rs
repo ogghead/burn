@@ -4,6 +4,7 @@ use crate::{
     tensor::CubeTensor,
 };
 use burn_backend::ops::AttentionModuleOptions;
+use cubecl::ir::{ElemType, FloatKind};
 use cubecl::tune::{LocalTuner, Tunable, TunableSet, TuneGroup, local_tuner};
 use cubek::attention::{
     launch::AttentionAutotuneKey, routines::blackbox_accelerated::BlackboxAcceleratedStrategy,
@@ -29,13 +30,7 @@ pub fn attention_autotune<R: CubeRuntime>(
         let flash_attention =
             TuneGroup::<AttentionAutotuneKey>::new("flash_attention", |_key| PRIORITY_MAX);
 
-        let fallback = TuneGroup::<AttentionAutotuneKey>::new("fallback", |key| {
-            if key.seq_q > 4096 {
-                PRIORITY_MIN
-            } else {
-                PRIORITY_MAX
-            }
-        });
+        let fallback = TuneGroup::<AttentionAutotuneKey>::new("fallback", |_key| PRIORITY_MAX);
 
         let mut set = TunableSet::new(create_key::<R>, input_gen::<R>);
 

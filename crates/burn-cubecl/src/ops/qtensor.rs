@@ -142,7 +142,7 @@ fn new_quantized<R: CubeRuntime>(
         metadata: Metadata::new(scales_shape, scales_strides),
         dtype: scales_dtype,
     };
-    let qparams = QParams { scales };
+    let qparams = QParams { scales, tensor_scale: None };
 
     CubeTensor::new_quantized(
         client,
@@ -199,7 +199,19 @@ where
         scheme: &QuantScheme,
         qparams: QuantizationParametersPrimitive<Self>,
     ) -> QuantizedTensor<Self> {
-        kernel::quantization::quantize(tensor, scheme, qparams.scales)
+        // Pass `tensor_scale` down into the kernel so the integer payload
+        // matches `clamp(w / (block_scale * tensor_scale))`. Caller must
+        // have renormalized `qparams.scales` by `tensor_scale` host-side.
+        let mut out = kernel::quantization::quantize(
+            tensor,
+            scheme,
+            qparams.scales,
+            qparams.tensor_scale,
+        );
+        if let (Some(ts), Some(qp)) = (qparams.tensor_scale, out.qparams.as_mut()) {
+            qp.tensor_scale = Some(ts);
+        }
+        out
     }
 
     fn dequantize(tensor: QuantizedTensor<Self>, dtype: FloatDType) -> FloatTensor<Self> {

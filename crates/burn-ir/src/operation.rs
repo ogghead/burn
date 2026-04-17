@@ -1219,11 +1219,31 @@ pub struct ConvTranspose3dOptionsIr {
 }
 
 /// Quantization parameters intermediate representation.
-#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QuantizationParametersIr {
     /// The scaling factor.
     pub scales: TensorIr,
+    /// Optional per-tensor scale for two-level quantization (e.g. NVFP4 Phase B).
+    /// Host-side scalar (single f32 per tensor), passed through to the kernel
+    /// launch path as a scalar rather than a GPU tensor.
+    pub tensor_scale: Option<f32>,
 }
+
+impl core::hash::Hash for QuantizationParametersIr {
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+        self.scales.hash(state);
+        self.tensor_scale.map(f32::to_bits).hash(state);
+    }
+}
+
+impl PartialEq for QuantizationParametersIr {
+    fn eq(&self, other: &Self) -> bool {
+        self.scales == other.scales
+            && self.tensor_scale.map(f32::to_bits) == other.tensor_scale.map(f32::to_bits)
+    }
+}
+
+impl Eq for QuantizationParametersIr {}
 
 #[derive(Clone, Debug, Hash, PartialEq, Serialize, Deserialize)]
 #[allow(missing_docs)]

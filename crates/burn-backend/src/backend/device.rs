@@ -75,7 +75,11 @@ impl DeviceSettings {
     }
 }
 
-/// Key for the registry: physical device type + device id
+/// Key for the registry: device id + discriminator type id.
+///
+/// The discriminator ensures that different backends sharing the same physical device type
+/// (e.g. `Cuda<bf16>` and `Cuda<f32>` both using `CudaDevice`) get separate settings entries.
+/// When called via `get_device_settings::<B>`, the discriminator is `TypeId::of::<B>()`.
 type RegistryKey = (DeviceId, TypeId);
 
 /// Global registry mapping devices to their settings.
@@ -88,12 +92,14 @@ static REGISTRY: LazyLock<RwLock<HashMap<RegistryKey, Arc<OnceLock<DeviceSetting
 struct DeviceSettingsRegistry;
 
 impl DeviceSettingsRegistry {
-    /// Returns the settings for the given device, inserting the default if absent.
-    fn get_or_insert<D: DeviceOps>(
-        device: &D,
+    /// Returns the settings for the given device+discriminator, inserting the default if absent.
+    ///
+    /// The `discriminator` distinguishes backends that share the same device type but need
+    /// different default settings (e.g. `Cuda<bf16>` vs `Cuda<f32>`).
+    fn get_or_insert(
+        key: RegistryKey,
         default_fn: impl FnOnce() -> DeviceSettings,
     ) -> DeviceSettings {
-        let key = Self::key(device);
         #[cfg(feature = "std")]
         {
             let cached = LOCAL_CACHE.with(|cache| cache.borrow().get(&key).copied());
@@ -135,11 +141,14 @@ impl DeviceSettingsRegistry {
         }
     }
 
-    /// Initializes the settings for the given device.
+    /// Initializes the settings for the given device+discriminator.
     ///
     /// Returns `Err` with the existing settings if already initialized.
-    fn init<D: DeviceOps>(device: &D, settings: DeviceSettings) -> Result<(), DeviceError> {
-        let key = Self::key(device);
+    fn init<D: DeviceOps>(
+        device: &D,
+        key: RegistryKey,
+        settings: DeviceSettings,
+    ) -> Result<(), DeviceError> {
         let mut map = REGISTRY.write().unwrap();
         let cell = map.entry(key).or_insert_with(|| Arc::new(OnceLock::new()));
 
@@ -157,9 +166,12 @@ impl DeviceSettingsRegistry {
         }
     }
 
-    /// Returns the device registry key.
-    fn key<D: Device>(device: &D) -> RegistryKey {
-        (device.to_id(), TypeId::of::<D>())
+    /// Returns the device registry key using the backend type as discriminator.
+    ///
+    /// Using `TypeId::of::<B>()` ensures that different backends sharing the same device type
+    /// (e.g. `Cuda<bf16>` and `Cuda<f32>` both using `CudaDevice`) get separate entries.
+    fn key<B: Backend>(device: &B::Device) -> RegistryKey {
+        (device.to_id(), TypeId::of::<B>())
     }
 }
 
@@ -171,6 +183,9 @@ thread_local! {
 }
 
 /// Get the [`device`'s settings](DeviceSettings).
+///
+/// Settings are keyed by both the device ID and the backend type, so different backends
+/// sharing the same physical device (e.g. `Cuda<bf16>` and `Cuda<f32>`) get independent settings.
 pub fn get_device_settings<B: Backend>(device: &B::Device) -> DeviceSettings {
     let default_settings = || {
         DeviceSettings::new(
@@ -179,7 +194,10 @@ pub fn get_device_settings<B: Backend>(device: &B::Device) -> DeviceSettings {
             default_bool::<B>(device),
         )
     };
-    DeviceSettingsRegistry::get_or_insert(device, default_settings)
+    DeviceSettingsRegistry::get_or_insert(
+        DeviceSettingsRegistry::key::<B>(device),
+        default_settings,
+    )
 }
 
 fn default_bool<B: Backend>(device: &B::Device) -> BoolDType {
@@ -311,7 +329,7 @@ pub fn set_default_dtypes<B: Backend>(
 
     let settings = DeviceSettings::new(float_dtype, int_dtype, default_bool::<B>(device));
 
-    initialize_unchecked(device, settings)?;
+    initialize_unchecked::<B>(device, settings)?;
     Ok(())
 }
 
@@ -350,7 +368,7 @@ pub fn set_default_float_dtype<B: Backend>(
 
     let settings = DeviceSettings::new(dtype, default_int::<B>(), default_bool::<B>(device));
 
-    initialize_unchecked(device, settings)?;
+    initialize_unchecked::<B>(device, settings)?;
     Ok(())
 }
 
@@ -389,16 +407,16 @@ pub fn set_default_int_dtype<B: Backend>(
 
     let settings = DeviceSettings::new(default_float::<B>(), dtype, default_bool::<B>(device));
 
-    initialize_unchecked(device, settings)?;
+    initialize_unchecked::<B>(device, settings)?;
     Ok(())
 }
 
 // Unchecked dtypes
-fn initialize_unchecked<D: DeviceOps>(
-    device: &D,
+fn initialize_unchecked<B: Backend>(
+    device: &B::Device,
     settings: DeviceSettings,
 ) -> Result<(), DeviceError> {
-    DeviceSettingsRegistry::init(device, settings)
+    DeviceSettingsRegistry::init(device, DeviceSettingsRegistry::key::<B>(device), settings)
 }
 
 #[cfg(all(test, feature = "std"))]
@@ -409,6 +427,8 @@ mod tests {
 
     fn clear_registry() {
         REGISTRY.write().unwrap().clear();
+        #[cfg(feature = "std")]
+        LOCAL_CACHE.with(|cache| cache.borrow_mut().clear());
     }
 
     #[derive(Clone, Debug, Default, PartialEq, new)]
@@ -462,8 +482,21 @@ mod tests {
         }
     }
 
-    fn get_test_device_settings<D: DeviceOps>(device: &D) -> DeviceSettings {
-        DeviceSettingsRegistry::get_or_insert(device, DeviceSettings::defaults)
+    /// Test helper: construct a registry key using the device type as discriminator.
+    /// In production code, `DeviceSettingsRegistry::key::<B>()` uses the Backend type instead.
+    fn test_key<D: Device + 'static>(device: &D) -> RegistryKey {
+        (device.to_id(), TypeId::of::<D>())
+    }
+
+    fn get_test_device_settings<D: Device + 'static>(device: &D) -> DeviceSettings {
+        DeviceSettingsRegistry::get_or_insert(test_key(device), DeviceSettings::defaults)
+    }
+
+    fn init_test_settings<D: DeviceOps + 'static>(
+        device: &D,
+        settings: DeviceSettings,
+    ) -> Result<(), DeviceError> {
+        DeviceSettingsRegistry::init(device, test_key(device), settings)
     }
 
     #[test]
@@ -488,7 +521,7 @@ mod tests {
         let device = TestDeviceA::new(0);
         let settings = DeviceSettings::new(FloatDType::BF16, IntDType::I32, BoolDType::Native);
 
-        initialize_unchecked(&device, settings).unwrap();
+        init_test_settings(&device, settings).unwrap();
         let s1 = get_test_device_settings(&device);
         let s2 = get_test_device_settings(&device);
 
@@ -506,7 +539,7 @@ mod tests {
         let d2 = TestDeviceA::new(1);
         let settings = DeviceSettings::new(FloatDType::F16, IntDType::I64, BoolDType::Native);
 
-        initialize_unchecked(&d1, settings).unwrap();
+        init_test_settings(&d1, settings).unwrap();
 
         let s1 = get_test_device_settings(&d1);
         let s2 = get_test_device_settings(&d2);
@@ -525,7 +558,7 @@ mod tests {
         let d2 = TestDeviceB::new(0);
         let settings = DeviceSettings::new(FloatDType::F16, IntDType::I64, BoolDType::Native);
 
-        initialize_unchecked(&d2, settings).unwrap();
+        init_test_settings(&d2, settings).unwrap();
 
         let s1 = get_test_device_settings(&d1);
         let s2 = get_test_device_settings(&d2);
@@ -545,7 +578,7 @@ mod tests {
         let _before = get_test_device_settings(&device);
 
         let settings = DeviceSettings::new(FloatDType::BF16, IntDType::I64, BoolDType::Native);
-        let result = initialize_unchecked(&device, settings);
+        let result = init_test_settings(&device, settings);
 
         assert!(matches!(
             result,
@@ -560,9 +593,9 @@ mod tests {
 
         let device = TestDeviceA::new(0);
         let settings = DeviceSettings::new(FloatDType::F16, IntDType::I32, BoolDType::Native);
-        initialize_unchecked(&device, settings).unwrap();
+        init_test_settings(&device, settings).unwrap();
 
-        let result = initialize_unchecked(&device, DeviceSettings::defaults());
+        let result = init_test_settings(&device, DeviceSettings::defaults());
         assert!(matches!(
             result,
             Err(DeviceError::AlreadyInitialized { .. })
@@ -578,7 +611,7 @@ mod tests {
         let device = TestDeviceA::new(0);
         let settings = DeviceSettings::new(FloatDType::F16, IntDType::I32, BoolDType::Native);
 
-        initialize_unchecked(&device, settings).unwrap();
+        init_test_settings(&device, settings).unwrap();
         let settings_actual = get_test_device_settings(&device);
         assert_eq!(settings_actual, settings);
 

@@ -51,6 +51,12 @@ pub enum QuantPropagation {
 pub struct QParams<S> {
     /// The scaling factor.
     pub scales: S,
+    /// Optional per-tensor scale for two-level quantization (e.g. NVFP4 Phase B).
+    ///
+    /// Host-side scalar because two-level decomposition yields a single
+    /// `f32` per tensor; it's carried through to the matmul kernel as a
+    /// launch scalar rather than a GPU tensor.
+    pub tensor_scale: Option<f32>,
 }
 
 /// A quantization parameter tensor descriptor.
@@ -155,7 +161,7 @@ impl QuantizedBytes {
 
         let scales = bytemuck::cast_slice(&qparams_bytes[total_bytes - scales_size..]).to_vec();
 
-        (values, QParams { scales })
+        (values, QParams { scales, tensor_scale: None })
     }
 
     fn split_i8_values(self, num_params: usize) -> (Vec<i8>, Vec<u32>) {

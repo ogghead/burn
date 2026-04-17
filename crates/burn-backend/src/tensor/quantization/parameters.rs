@@ -12,4 +12,10 @@ pub use burn_std::quantization::{QParamTensor, QParams};
 pub struct QuantizationParametersPrimitive<B: Backend> {
     /// The scaling factor.
     pub scales: B::FloatTensorPrimitive,
+    /// Optional per-tensor scale for two-level quantization (e.g. NVFP4 Phase B).
+    ///
+    /// Host-side scalar because two-level decomposition yields a single
+    /// `f32` per tensor; stored on the quantized tensor's metadata and
+    /// registered as a kernel launch scalar at matmul time.
+    pub tensor_scale: Option<f32>,
 }

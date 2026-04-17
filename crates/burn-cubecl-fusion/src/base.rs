@@ -103,7 +103,11 @@ impl<R: Runtime> CubeFusionHandle<R> {
                 QuantParam::F32 => DType::F32,
                 QuantParam::F16 => DType::F16,
                 QuantParam::BF16 => DType::BF16,
-                QuantParam::UE8M0 | QuantParam::UE4M3 => unimplemented!("Not yet supported"),
+                // Sub-byte / 8-bit float scales are stored as raw bytes on the
+                // device and reinterpreted inside the kernel via `QParamType`
+                // (see `engine::codegen::kernel::dequantize` and
+                // `burn-cubecl/src/ops/qtensor.rs`).
+                QuantParam::UE8M0 | QuantParam::UE4M3 => DType::U8,
             },
             strides: qparams.scales.metadata.strides().clone(),
             qparams: None,

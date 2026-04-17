@@ -862,9 +862,7 @@ impl From<DType> for FuseType {
             DType::QFloat(scheme) => match scheme.store {
                 QuantStore::Native => match scheme.value {
                     QuantValue::Q8F | QuantValue::Q8S => Self::I8,
-                    QuantValue::E4M3 | QuantValue::E5M2 => {
-                        unimplemented!("Unsupported precision for fusion")
-                    }
+                    QuantValue::E4M3 | QuantValue::E5M2 => Self::U8,
                     QuantValue::Q4F
                     | QuantValue::Q4S
                     | QuantValue::Q2F
@@ -875,7 +873,7 @@ impl From<DType> for FuseType {
                 },
                 QuantStore::PackedU32(_) => Self::U32,
                 QuantStore::PackedNative(_) => match scheme.value {
-                    QuantValue::E2M1 => unimplemented!("Unsupported precision for fusion"),
+                    QuantValue::E2M1 => Self::U8,
                     other => panic!("{other:?} doesn't support native packing"),
                 },
             },

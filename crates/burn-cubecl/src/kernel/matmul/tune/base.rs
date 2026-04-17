@@ -384,6 +384,38 @@ pub fn matmul_autotune<R: CubeRuntime>(
                 Some(&tma),
                 &mma,
             ),
+            (
+                Strategy::DoubleTmaCmma(BlueprintStrategy::Inferred(DoubleBufferingArgs {
+                    specialized: false,
+                })),
+                true,
+                Some(&tma),
+                &cmma,
+            ),
+            (
+                Strategy::DoubleTmaMma(BlueprintStrategy::Inferred(DoubleBufferingArgs {
+                    specialized: false,
+                })),
+                true,
+                Some(&tma),
+                &mma,
+            ),
+            (
+                Strategy::DoubleTmaCmma(BlueprintStrategy::Inferred(DoubleBufferingArgs {
+                    specialized: true,
+                })),
+                true,
+                Some(&tma),
+                &cmma,
+            ),
+            (
+                Strategy::DoubleTmaMma(BlueprintStrategy::Inferred(DoubleBufferingArgs {
+                    specialized: true,
+                })),
+                true,
+                Some(&tma),
+                &mma,
+            ),
         ] {
             let priority_within_group = |key: &MatmulAutotuneKey, double_buf: bool| match double_buf
             {

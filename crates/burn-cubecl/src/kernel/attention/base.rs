@@ -54,6 +54,15 @@ pub fn attention<R: CubeRuntime>(
     options: AttentionModuleOptions,
     strategy: AttentionStrategy,
 ) -> Result<CubeTensor<R>, AttentionSetupError> {
+    // FP8A probe: log which attention strategy is dispatched. Set FP8A_PROBE=1 to enable.
+    // Uses eprintln! to avoid depending on tracing-subscriber configuration in the host
+    // crate. Future runs can re-enable by exporting FP8A_PROBE=1. See task #164.
+    if std::env::var_os("FP8A_PROBE").is_some() {
+        eprintln!(
+            "fp8a-probe: attention strategy dispatch — strategy={:?} q_shape={:?} kv_shape={:?} q_dtype={:?}",
+            strategy, query.meta.shape, key.meta.shape, query.dtype
+        );
+    }
     match strategy {
         AttentionStrategy::FlashBlackboxAccelerated(strategy) => flash_attention(
             query,

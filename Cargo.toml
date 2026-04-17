@@ -179,15 +179,15 @@ portable-atomic = { version = "1.13.1" }
 portable-atomic-util = { version = "0.2.6", features = ["alloc"] }
 
 ### For the main burn branch. ###
-cubecl = { git = "https://github.com/tracel-ai/cubecl", default-features = false, rev = "e743e8f7b22b93378bab28b26916f7cf61321ccc" }
-cubecl-common = { git = "https://github.com/tracel-ai/cubecl", default-features = false, rev = "e743e8f7b22b93378bab28b26916f7cf61321ccc" }
-cubecl-zspace = { git = "https://github.com/tracel-ai/cubecl", default-features = false, rev = "e743e8f7b22b93378bab28b26916f7cf61321ccc" }
-cubek = { git = "https://github.com/tracel-ai/cubek", default-features = false, rev = "33b437859e11b77728799475351faee01af25024" }
+# cubecl = { git = "https://github.com/tracel-ai/cubecl", default-features = false, rev = "e743e8f7b22b93378bab28b26916f7cf61321ccc" }
+# cubecl-common = { git = "https://github.com/tracel-ai/cubecl", default-features = false, rev = "e743e8f7b22b93378bab28b26916f7cf61321ccc" }
+# cubecl-zspace = { git = "https://github.com/tracel-ai/cubecl", default-features = false, rev = "e743e8f7b22b93378bab28b26916f7cf61321ccc" }
+# cubek = { git = "https://github.com/tracel-ai/cubek", default-features = false, rev = "33b437859e11b77728799475351faee01af25024" }
 ### For local development. ###
-# cubecl = { path = "../cubecl/crates/cubecl", default-features = false }
-# cubecl-common = { path = "../cubecl/crates/cubecl-common", default-features = false }
-# cubecl-zspace = { path = "../cubecl/crates/cubecl-zspace", default-features = false }
-# cubek = { path = "../cubek/crates/cubek", default-features = false }
+cubecl = { path = "../cubecl/crates/cubecl", default-features = false }
+cubecl-common = { path = "../cubecl/crates/cubecl-common", default-features = false }
+cubecl-zspace = { path = "../cubecl/crates/cubecl-zspace", default-features = false }
+cubek = { path = "../cubek/crates/cubek", default-features = false }
 ### For the release. ###
 # cubecl = { version = "=0.10.0-pre.2", default-features = false }
 # cubecl-common = { version = "=0.10.0-pre.2", default-features = false }
@@ -198,6 +198,36 @@ cubek = { git = "https://github.com/tracel-ai/cubek", default-features = false, 
 tracel-xtask = "=4.13.5"
 # ### For local development. ###
 # tracel-xtask = { path = "../xtask/crates/tracel-xtask", default-features = false }
+
+[patch."https://github.com/tracel-ai/cubecl"]
+cubecl = { path = "../cubecl/crates/cubecl", default-features = false }
+cubecl-common = { path = "../cubecl/crates/cubecl-common", default-features = false }
+cubecl-core = { path = "../cubecl/crates/cubecl-core", default-features = false }
+cubecl-cpp = { path = "../cubecl/crates/cubecl-cpp", default-features = false }
+cubecl-cpu = { path = "../cubecl/crates/cubecl-cpu", default-features = false }
+cubecl-cuda = { path = "../cubecl/crates/cubecl-cuda", default-features = false }
+cubecl-hip = { path = "../cubecl/crates/cubecl-hip", default-features = false }
+cubecl-ir = { path = "../cubecl/crates/cubecl-ir", default-features = false }
+cubecl-macros = { path = "../cubecl/crates/cubecl-macros", default-features = false }
+cubecl-macros-internal = { path = "../cubecl/crates/cubecl-macros-internal", default-features = false }
+cubecl-opt = { path = "../cubecl/crates/cubecl-opt", default-features = false }
+cubecl-runtime = { path = "../cubecl/crates/cubecl-runtime", default-features = false }
+cubecl-spirv = { path = "../cubecl/crates/cubecl-spirv", default-features = false }
+cubecl-std = { path = "../cubecl/crates/cubecl-std", default-features = false }
+cubecl-wgpu = { path = "../cubecl/crates/cubecl-wgpu", default-features = false }
+cubecl-zspace = { path = "../cubecl/crates/cubecl-zspace", default-features = false }
+
+[patch."https://github.com/tracel-ai/cubek"]
+cubek = { path = "../cubek/crates/cubek", default-features = false }
+cubek-matmul = { path = "../cubek/crates/cubek-matmul", default-features = false }
+cubek-std = { path = "../cubek/crates/cubek-std", default-features = false }
+cubek-quant = { path = "../cubek/crates/cubek-quant", default-features = false }
+cubek-reduce = { path = "../cubek/crates/cubek-reduce", default-features = false }
+cubek-attention = { path = "../cubek/crates/cubek-attention", default-features = false }
+cubek-convolution = { path = "../cubek/crates/cubek-convolution", default-features = false }
+cubek-fft = { path = "../cubek/crates/cubek-fft", default-features = false }
+cubek-random = { path = "../cubek/crates/cubek-random", default-features = false }
+cubek-test-utils = { path = "../cubek/crates/cubek-test-utils", default-features = false }
 
 [profile.dev]
 debug = 1 # Speed up compilation time and not necessary.

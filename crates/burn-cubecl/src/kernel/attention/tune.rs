@@ -30,6 +30,12 @@ pub fn attention_autotune<R: CubeRuntime>(
         let flash_attention =
             TuneGroup::<AttentionAutotuneKey>::new("flash_attention", |_key| PRIORITY_MAX);
 
+        // Keep fallback at PRIORITY_MAX for all shapes. On sm_120 (Blackwell
+        // Workstation RTX PRO 6000), both blackbox_accelerated and unit flash
+        // variants produce InvalidSamples (NaN/Inf) or stripe-pattern garbage
+        // with bf16 inputs — fallback is the only correct kernel. Upstream's
+        // seq_q>4096 deprioritization assumes flash always works, which isn't
+        // true on this GPU. See task #177 / cubek bf16 WMMA codegen bug.
         let fallback = TuneGroup::<AttentionAutotuneKey>::new("fallback", |_key| PRIORITY_MAX);
 
         let mut set = TunableSet::new(create_key::<R>, input_gen::<R>);

@@ -464,6 +464,8 @@ impl FusedMatmulLaunch<'_> {
             address_type,
             self.matmul.lhs.scheme(),
             self.matmul.rhs.scheme(),
+            self.matmul.lhs.tensor_scale(),
+            self.matmul.rhs.tensor_scale(),
         )?;
 
         match self.selector {

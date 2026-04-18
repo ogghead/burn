@@ -1,5 +1,5 @@
 pub use burn_std::{QPARAM_ALIGN, params_shape};
-use burn_std::{QuantLevel, QuantMode, QuantScheme, Shape};
+use burn_std::{QuantLevel, QuantMode, QuantParam, QuantScheme, Shape};
 
 use super::{Calibration, QuantizationParametersPrimitive};
 use crate::{Backend, TensorMetadata, get_device_settings};
@@ -63,9 +63,26 @@ pub fn compute_q_params<B: Backend>(
             let values_range =
                 B::float_mul_scalar(B::float_mask_where(min_abs, mask, max_abs), 2f32.into());
 
-            QuantizationParametersPrimitive {
-                scales: B::float_div_scalar(values_range, (b - a).into()),
-                tensor_scale: None,
+            let scales = B::float_div_scalar(values_range, (b - a).into());
+
+            if scheme.param == QuantParam::UE4M3 {
+                let abs_scales = B::float_abs(scales.clone());
+                let ts_tensor = B::float_max(abs_scales);
+                let ts_data =
+                    burn_std::future::block_on(B::float_into_data(ts_tensor)).unwrap();
+                let ts_f32 = ts_data.convert::<f32>().to_vec::<f32>().unwrap()[0];
+
+                let scales = B::float_div_scalar(scales, ts_f32.into());
+
+                QuantizationParametersPrimitive {
+                    scales,
+                    tensor_scale: Some(ts_f32),
+                }
+            } else {
+                QuantizationParametersPrimitive {
+                    scales,
+                    tensor_scale: None,
+                }
             }
         }
     }

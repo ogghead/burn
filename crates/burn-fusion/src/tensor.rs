@@ -24,6 +24,9 @@ pub struct FusionTensor<R: FusionRuntime> {
     pub dtype: DType,
     /// The current stream id this tensor is on.
     pub stream: StreamId,
+    /// Per-tensor scale for two-level NVFP4 quantization. `None` for
+    /// non-quantized tensors or single-level quantization.
+    pub tensor_scale: Option<f32>,
     pub(crate) count: Arc<AtomicU32>,
 }
 
@@ -37,6 +40,7 @@ impl<R: FusionRuntime> Clone for FusionTensor<R> {
             client: self.client.clone(),
             dtype: self.dtype,
             stream: self.stream,
+            tensor_scale: self.tensor_scale,
             count: self.count.clone(),
         }
     }
@@ -84,6 +88,7 @@ impl<R: FusionRuntime> FusionTensor<R> {
             client,
             dtype,
             stream,
+            tensor_scale: None,
             count: Arc::new(AtomicU32::new(1)),
         }
     }

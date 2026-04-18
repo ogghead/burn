@@ -592,6 +592,8 @@ impl RelativeOps for FloatOperationIr {
                 lhs: desc.lhs.to_relative(converter),
                 rhs: desc.rhs.to_relative(converter),
                 out: desc.out.to_relative(converter),
+                lhs_tensor_scale: desc.lhs_tensor_scale,
+                rhs_tensor_scale: desc.rhs_tensor_scale,
             }),
             FloatOperationIr::Cross(desc) => FloatOperationIr::Cross(CrossOpIr {
                 lhs: desc.lhs.to_relative(converter),
@@ -696,6 +698,8 @@ impl RelativeOps for IntOperationIr {
                 lhs: desc.lhs.to_relative(converter),
                 rhs: desc.rhs.to_relative(converter),
                 out: desc.out.to_relative(converter),
+                lhs_tensor_scale: desc.lhs_tensor_scale,
+                rhs_tensor_scale: desc.rhs_tensor_scale,
             }),
             IntOperationIr::BitwiseAnd(desc) => IntOperationIr::BitwiseAnd(BinaryOpIr {
                 lhs: desc.lhs.to_relative(converter),

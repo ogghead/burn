@@ -67,21 +67,24 @@ impl<B: FusionBackend> QTensorOps<Self> for Fusion<B> {
         let streams = OperationStreams::with_inputs([&tensor, &qparams.scales]);
 
         let client = tensor.client.clone();
+        let ts = qparams.tensor_scale;
         let qparams = QuantizationParametersIr {
             scales: qparams.scales.into_ir(),
-            tensor_scale: qparams.tensor_scale,
+            tensor_scale: ts,
         };
         let desc = QuantizeOpIr::create(tensor.into_ir(), qparams, *scheme, || {
             client.create_empty_handle()
         });
 
-        client
+        let mut out = client
             .register(
                 streams,
                 OperationIr::Float(desc.tensor.dtype, FloatOperationIr::Quantize(desc.clone())),
                 QuantizeOp::<B>::new(desc),
             )
-            .output()
+            .output();
+        out.tensor_scale = ts;
+        out
     }
 
     fn dequantize(tensor: QuantizedTensor<Self>, dtype: FloatDType) -> FloatTensor<Self> {
@@ -479,6 +482,15 @@ impl<B: FusionBackend> QTensorOps<Self> for Fusion<B> {
             TensorPrimitive::QFloat(lhs) => lhs.client.clone(),
         };
 
+        let lhs_ts = match &lhs {
+            TensorPrimitive::QFloat(t) => t.tensor_scale,
+            _ => None,
+        };
+        let rhs_ts = match &rhs {
+            TensorPrimitive::QFloat(t) => t.tensor_scale,
+            _ => None,
+        };
+
         let lhs = match lhs {
             TensorPrimitive::Float(lhs) => lhs.into_ir(),
             TensorPrimitive::QFloat(lhs) => lhs.into_ir(),
@@ -488,7 +500,9 @@ impl<B: FusionBackend> QTensorOps<Self> for Fusion<B> {
             TensorPrimitive::QFloat(rhs) => rhs.into_ir(),
         };
 
-        let desc = MatmulOpIr::create_mixed(lhs, rhs, dtype, || client.create_empty_handle());
+        let mut desc = MatmulOpIr::create_mixed(lhs, rhs, dtype, || client.create_empty_handle());
+        desc.lhs_tensor_scale = lhs_ts;
+        desc.rhs_tensor_scale = rhs_ts;
 
         let out = client
             .register(

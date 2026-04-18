@@ -4,10 +4,10 @@ use crate::{
     tensor::CubeTensor,
 };
 use burn_backend::ops::AttentionModuleOptions;
-use cubecl::ir::{ElemType, FloatKind};
 use cubecl::tune::{LocalTuner, Tunable, TunableSet, TuneGroup, local_tuner};
 use cubek::attention::{
-    launch::AttentionAutotuneKey, routines::blackbox_accelerated::BlackboxAcceleratedStrategy,
+    launch::AttentionAutotuneKey,
+    routines::blackbox_accelerated::BlackboxAcceleratedStrategy,
 };
 
 /// Executes autotune on attention operations

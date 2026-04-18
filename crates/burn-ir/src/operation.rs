@@ -782,12 +782,36 @@ pub struct BinaryOpIr {
     pub out: TensorIr,
 }
 
-#[derive(Clone, Debug, Hash, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[allow(missing_docs)]
 pub struct MatmulOpIr {
     pub lhs: TensorIr,
     pub rhs: TensorIr,
     pub out: TensorIr,
+    /// Per-tensor scale for two-level LHS quantization (e.g. NVFP4).
+    pub lhs_tensor_scale: Option<f32>,
+    /// Per-tensor scale for two-level RHS quantization (e.g. NVFP4).
+    pub rhs_tensor_scale: Option<f32>,
+}
+
+impl core::hash::Hash for MatmulOpIr {
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+        self.lhs.hash(state);
+        self.rhs.hash(state);
+        self.out.hash(state);
+        self.lhs_tensor_scale.map(f32::to_bits).hash(state);
+        self.rhs_tensor_scale.map(f32::to_bits).hash(state);
+    }
+}
+
+impl PartialEq for MatmulOpIr {
+    fn eq(&self, other: &Self) -> bool {
+        self.lhs == other.lhs
+            && self.rhs == other.rhs
+            && self.out == other.out
+            && self.lhs_tensor_scale.map(f32::to_bits) == other.lhs_tensor_scale.map(f32::to_bits)
+            && self.rhs_tensor_scale.map(f32::to_bits) == other.rhs_tensor_scale.map(f32::to_bits)
+    }
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Serialize, Deserialize)]

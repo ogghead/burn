@@ -65,6 +65,7 @@ impl<R: Runtime> OperationFuser<CubeOptimization<R>> for MatmulFuser<R> {
                             scales,
                             precision: op.out.dtype.into(),
                             scheme,
+                            tensor_scale_bits: op.lhs_tensor_scale.map(f32::to_bits),
                         }
                     }
                     _ => MatmulArg::Normal(self.fuser.input_unhandled(&op.lhs)),
@@ -77,6 +78,7 @@ impl<R: Runtime> OperationFuser<CubeOptimization<R>> for MatmulFuser<R> {
                             scales,
                             precision: op.out.dtype.into(),
                             scheme,
+                            tensor_scale_bits: op.rhs_tensor_scale.map(f32::to_bits),
                         }
                     }
                     _ => MatmulArg::Normal(self.fuser.input_unhandled(&op.rhs)),

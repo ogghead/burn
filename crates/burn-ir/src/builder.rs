@@ -225,16 +225,38 @@ impl_ir_create!(
     create_comparison(bool_dtype: DType)
 );
 
-impl_ir_create!(
-    MatmulOpIr {
+impl MatmulOpIr {
+    pub fn create(lhs: TensorIr, rhs: TensorIr, new_id: impl FnOnce() -> crate::TensorId) -> Self {
+        let shape = calculate_matmul_output(&lhs.shape, &rhs.shape).unwrap();
+        let dtype = output_dtype_mixed([&lhs.dtype, &rhs.dtype]).unwrap();
+        let out = TensorIr::uninit(new_id(), shape, dtype);
+        Self {
+            lhs,
+            rhs,
+            out,
+            lhs_tensor_scale: None,
+            rhs_tensor_scale: None,
+        }
+    }
+
+    pub fn create_mixed(
         lhs: TensorIr,
-        rhs: TensorIr
-    },
-    shape = calculate_matmul_output(&lhs.shape, &rhs.shape).unwrap(),
-    dtype = output_dtype_mixed([&lhs.dtype, &rhs.dtype]).unwrap(),
-    // Additional constructor for mixed dtypes
-    create_mixed(out_dtype: DType)
-);
+        rhs: TensorIr,
+        out_dtype: DType,
+        new_id: impl FnOnce() -> crate::TensorId,
+    ) -> Self {
+        let shape = calculate_matmul_output(&lhs.shape, &rhs.shape).unwrap();
+        let _ = output_dtype_mixed([&lhs.dtype, &rhs.dtype]).unwrap();
+        let out = TensorIr::uninit(new_id(), shape, out_dtype);
+        Self {
+            lhs,
+            rhs,
+            out,
+            lhs_tensor_scale: None,
+            rhs_tensor_scale: None,
+        }
+    }
+}
 
 impl_ir_create!(
     SwapDimsOpIr {

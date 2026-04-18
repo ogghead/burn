@@ -12,6 +12,7 @@ use cubek::attention::{
         AccumulatorPrecision, AttentionGlobalTypes, AttentionOptions, AttentionSetupError,
     },
     routines::blackbox_accelerated::BlackboxAcceleratedStrategy,
+    routines::fp8_accelerated::Fp8AcceleratedStrategy,
 };
 
 #[derive(Debug)]
@@ -19,6 +20,9 @@ use cubek::attention::{
 pub enum AttentionStrategy {
     /// Flash Attention using accelerated inner matmuls.
     FlashBlackboxAccelerated(BlackboxAcceleratedStrategy),
+
+    /// Flash Attention using native FP8 MMA (e4m3×e4m3→f32).
+    FlashFp8Accelerated(Fp8AcceleratedStrategy),
 
     /// Flash Attention using unit inner matmuls.
     FlashUnit,
@@ -72,6 +76,17 @@ pub fn attention<R: CubeRuntime>(
             attn_bias,
             options,
             launch::Strategy::BlackboxAccelerated(
+                cubek::attention::launch::BlueprintStrategy::Inferred(strategy),
+            ),
+        ),
+        AttentionStrategy::FlashFp8Accelerated(strategy) => flash_attention(
+            query,
+            key,
+            value,
+            mask,
+            attn_bias,
+            options,
+            launch::Strategy::Fp8Accelerated(
                 cubek::attention::launch::BlueprintStrategy::Inferred(strategy),
             ),
         ),

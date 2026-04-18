@@ -305,7 +305,12 @@ fn global_view<E: CubePrimitive>(
 
     match comptime![arg.clone()] {
         MatmulArg::Normal(_) => View::new::<GlobalInput, Coords1d>(&data_buf, data_layout),
-        MatmulArg::Quantized { scales, scheme, .. } => {
+        MatmulArg::Quantized {
+            scales,
+            scheme,
+            tensor_scale_bits,
+            ..
+        } => {
             let scales_layout = match comptime![scheme.level] {
                 QuantLevel::Tensor => GlobalScaleLayout::new_PerTensor(shape),
                 QuantLevel::Block(block_size) => {
@@ -340,6 +345,7 @@ fn global_view<E: CubePrimitive>(
 
             // Redefine because of `Numeric` bound, kinda hacky but I can't figure out a way to
             // assert `Vector<T: Numeric>::Scalar: Numeric`
+            let ts = comptime![tensor_scale_bits.map(f32::from_bits)];
             let define!(T) = storage_type_of::<E::Scalar>();
             let view = create_quant_view_dynamic::<T, E::Size>(
                 data_buf,
@@ -347,6 +353,7 @@ fn global_view<E: CubePrimitive>(
                 scales_buf,
                 scales_layout,
                 scheme,
+                ts,
             );
             // Safety: should be fine since `Vector<E::Scalar, N>` is guaranteed equal to `E`
             comptime![unsafe { core::mem::transmute(view) }]
@@ -424,6 +431,7 @@ struct CreateQuantView<'a, E: Numeric, N: Size> {
     scales_buf: GlobalInputExpand,
     scales_layout: GlobalScaleLayoutExpand,
     scheme: QuantScheme,
+    tensor_scale: Option<f32>,
     _ty: PhantomData<(E, N)>,
 }
 
@@ -438,6 +446,7 @@ impl<'a, E: Numeric, N: Size> RunWithQuantType for CreateQuantView<'a, E, N> {
             self.scales_buf,
             self.scales_layout,
             self.scheme,
+            self.tensor_scale,
         )
     }
 }
@@ -450,6 +459,7 @@ fn create_quant_view_dynamic<E: Numeric, N: Size>(
     scales_buf: GlobalInput,
     scales_layout: GlobalScaleLayout,
     #[comptime] scheme: QuantScheme,
+    #[comptime] tensor_scale: Option<f32>,
 ) -> View<Vector<E, N>, BatchedCoords> {
     intrinsic!(|scope| {
         let func = CreateQuantView {
@@ -459,6 +469,7 @@ fn create_quant_view_dynamic<E: Numeric, N: Size>(
             scales_buf,
             scales_layout,
             scheme,
+            tensor_scale,
             _ty: PhantomData,
         };
         run_with_quant_type(func, scheme)
@@ -472,6 +483,7 @@ fn create_quant_view<E: Numeric, N: Size, Q: Scalar, S: Scalar>(
     scales_buf: GlobalInput,
     scales_layout: GlobalScaleLayout,
     #[comptime] scheme: QuantScheme,
+    #[comptime] tensor_scale: Option<f32>,
 ) -> View<Vector<E, N>, BatchedCoords> {
     let size!(NQ) = N::value().comptime() / scheme.num_quants();
 
@@ -479,7 +491,9 @@ fn create_quant_view<E: Numeric, N: Size, Q: Scalar, S: Scalar>(
         View::new::<GlobalInput, Coords1d>(&data_buf, data_layout);
     let scales_view: View<S, BatchedCoords> =
         View::new::<GlobalInput, Coords1d>(&scales_buf, scales_layout);
-    QuantizedView::new(data_view, scales_view, 1.0f32, scheme, false).view()
+    let has_ts = tensor_scale.is_some();
+    let ts = tensor_scale.unwrap_or(1.0);
+    QuantizedView::new(data_view, scales_view, ts, scheme, has_ts).view()
 }
 
 #[derive(CubeType)]
@@ -548,7 +562,7 @@ impl FusedMatmulState {
     }
 }
 
-#[derive(Clone, Debug, Hash, PartialEq, Eq, Serialize, Deserialize, PartialOrd, Ord)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 /// Argument to a matmul operation.
 pub enum MatmulArg {
     Normal(FuseArg),
@@ -557,6 +571,9 @@ pub enum MatmulArg {
         scales: FuseArg,
         precision: FuseType,
         scheme: QuantScheme,
+        /// Per-tensor scale for two-level quantization (e.g. NVFP4).
+        /// Stored as `f32::to_bits()` for Hash/Eq/Ord compatibility.
+        tensor_scale_bits: Option<u32>,
     },
 }
 
@@ -581,4 +598,100 @@ impl MatmulArg {
             MatmulArg::Quantized { precision, .. } => *precision,
         }
     }
+
+    pub fn tensor_scale(&self) -> Option<f32> {
+        match self {
+            MatmulArg::Normal(_) => None,
+            MatmulArg::Quantized {
+                tensor_scale_bits, ..
+            } => tensor_scale_bits.map(f32::from_bits),
+        }
+    }
 }
+
+impl core::hash::Hash for MatmulArg {
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+        core::mem::discriminant(self).hash(state);
+        match self {
+            MatmulArg::Normal(arg) => arg.hash(state),
+            MatmulArg::Quantized {
+                data,
+                scales,
+                precision,
+                scheme,
+                tensor_scale_bits,
+            } => {
+                data.hash(state);
+                scales.hash(state);
+                precision.hash(state);
+                scheme.hash(state);
+                tensor_scale_bits.hash(state);
+            }
+        }
+    }
+}
+
+impl PartialEq for MatmulArg {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (MatmulArg::Normal(a), MatmulArg::Normal(b)) => a == b,
+            (
+                MatmulArg::Quantized {
+                    data: d1,
+                    scales: s1,
+                    precision: p1,
+                    scheme: sc1,
+                    tensor_scale_bits: ts1,
+                },
+                MatmulArg::Quantized {
+                    data: d2,
+                    scales: s2,
+                    precision: p2,
+                    scheme: sc2,
+                    tensor_scale_bits: ts2,
+                },
+            ) => d1 == d2 && s1 == s2 && p1 == p2 && sc1 == sc2 && ts1 == ts2,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for MatmulArg {}
+
+impl PartialOrd for MatmulArg {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for MatmulArg {
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
+        match (self, other) {
+            (MatmulArg::Normal(a), MatmulArg::Normal(b)) => a.cmp(b),
+            (MatmulArg::Normal(_), MatmulArg::Quantized { .. }) => core::cmp::Ordering::Less,
+            (MatmulArg::Quantized { .. }, MatmulArg::Normal(_)) => core::cmp::Ordering::Greater,
+            (
+                MatmulArg::Quantized {
+                    data: d1,
+                    scales: s1,
+                    precision: p1,
+                    scheme: sc1,
+                    tensor_scale_bits: ts1,
+                },
+                MatmulArg::Quantized {
+                    data: d2,
+                    scales: s2,
+                    precision: p2,
+                    scheme: sc2,
+                    tensor_scale_bits: ts2,
+                },
+            ) => d1
+                .cmp(d2)
+                .then(s1.cmp(s2))
+                .then(p1.cmp(p2))
+                .then(sc1.cmp(sc2))
+                .then(ts1.cmp(ts2)),
+        }
+    }
+}
+

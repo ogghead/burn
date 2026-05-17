@@ -19,8 +19,12 @@ impl<R: FusionRuntime> OrderedExecution<R> {
     pub fn operation_within_optimization(&self, index: usize) -> UnfusedOp<R> {
         match &self.ordering {
             Some(val) => {
-                let index = val[index];
-                self.operations[index].clone()
+                let global_index = if index < val.len() {
+                    val[index]
+                } else {
+                    self.num_executed + index
+                };
+                self.operations[global_index.min(self.operations.len() - 1)].clone()
             }
             None => panic!("No ordering provided"),
         }

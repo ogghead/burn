@@ -1,6 +1,6 @@
 use crate::{
     CubeBackend, CubeRuntime, kernel::attention::attention_autotune,
-    ops::numeric::empty_device_dtype, tensor::CubeTensor,
+    kernel::into_contiguous, ops::numeric::empty_device_dtype, tensor::CubeTensor,
 };
 use burn_backend::{
     DType, Shape,
@@ -94,6 +94,10 @@ pub fn flash_attention<R: CubeRuntime>(
     options: AttentionModuleOptions,
     strategy: launch::Strategy,
 ) -> Result<CubeTensor<R>, AttentionSetupError> {
+    let query = into_contiguous(query);
+    let key = into_contiguous(key);
+    let value = into_contiguous(value);
+
     let client = query.client.clone();
     let out = init_attention_output(&query, &value);
 

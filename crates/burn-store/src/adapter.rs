@@ -218,13 +218,23 @@ fn default_half_precision_modules() -> HashSet<String> {
 #[derive(Debug, Clone)]
 pub struct HalfPrecisionAdapter {
     modules: HashSet<String>,
+    half_dtype: DType,
 }
 
 impl HalfPrecisionAdapter {
-    /// Create a new adapter with the default set of modules.
+    /// Create a new adapter with the default set of modules, targeting F16.
     pub fn new() -> Self {
         Self {
             modules: default_half_precision_modules(),
+            half_dtype: DType::F16,
+        }
+    }
+
+    /// Create a new adapter targeting BF16 instead of F16.
+    pub fn bf16() -> Self {
+        Self {
+            modules: default_half_precision_modules(),
+            half_dtype: DType::BF16,
         }
     }
 
@@ -276,10 +286,9 @@ impl Default for HalfPrecisionAdapter {
 
 impl ModuleAdapter for HalfPrecisionAdapter {
     fn adapt(&self, snapshot: &TensorSnapshot) -> TensorSnapshot {
-        // Determine target dtype from source: F32 -> F16, F16 -> F32, anything else -> skip
         let target_dtype = match snapshot.dtype {
-            DType::F32 => DType::F16,
-            DType::F16 => DType::F32,
+            DType::F32 => self.half_dtype,
+            dt if dt == self.half_dtype => DType::F32,
             _ => return snapshot.clone(),
         };
 

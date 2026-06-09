@@ -422,8 +422,14 @@ fn adapt_pytorch_tensor(
         None => return snapshot.clone(), // No user-defined module found
     };
 
-    // Linear: transpose weight (bidirectional - same operation both ways)
-    if module_type == module_names::LINEAR && param_name == "weight" && snapshot.shape.len() == 2 {
+    // Linear: transpose weight (bidirectional - same operation both ways).
+    // `AdaptedLinear` (gentools' trainable LoRA/LoKr drop-in for `Linear`) keeps
+    // the identical `[in, out]` weight layout, so it needs the same PyTorch
+    // transpose — but the Module derive reports it as `Struct:AdaptedLinear`, so
+    // match it explicitly alongside `Struct:Linear`.
+    let is_linear_like =
+        module_type == module_names::LINEAR || module_type == "Struct:AdaptedLinear";
+    if is_linear_like && param_name == "weight" && snapshot.shape.len() == 2 {
         return transpose_2d_tensor(snapshot);
     }
 

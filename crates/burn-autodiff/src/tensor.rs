@@ -16,10 +16,15 @@ use portable_atomic_util::Arc;
 #[cfg(feature = "distributed")]
 use burn_backend::distributed::{DistributedBackend, DistributedParamId, DistributedParams};
 
+/// An autodiff-tracked tensor: the inner backend primitive plus its node in the
+/// autodiff graph.
 #[derive(Debug, Clone)]
 pub struct AutodiffTensor<B: Backend> {
+    /// The inner backend tensor primitive.
     pub primitive: B::FloatTensorPrimitive,
+    /// The autodiff graph node for this tensor.
     pub node: NodeRef,
+    /// Reference-counted node id used for graph memory management.
     pub rc: NodeRefCount,
 }
 
@@ -90,6 +95,8 @@ impl<B: Backend> AutodiffTensor<B> {
         }
     }
 
+    /// Returns true if this tensor participates in the autodiff graph (i.e. it
+    /// requires gradients).
     pub fn is_tracked(&self) -> bool {
         !self.node.requirement.is_none()
     }
@@ -184,10 +191,12 @@ impl<B: Backend> AutodiffTensor<B> {
         self
     }
 
+    /// Consume the autodiff tensor, returning the inner backend primitive.
     pub fn into_primitive(self) -> B::FloatTensorPrimitive {
         self.primitive
     }
 
+    /// Run the backward pass from this tensor, returning the gradients.
     #[cfg(not(feature = "distributed"))]
     pub fn backward(self) -> Gradients {
         let client = self.node.client.clone();
@@ -195,14 +204,17 @@ impl<B: Backend> AutodiffTensor<B> {
         AutodiffClient::backward::<B>(&client, self)
     }
 
+    /// Get this tensor's gradient from `grads`, if present.
     pub fn grad(&self, grads: &Gradients) -> Option<B::FloatTensorPrimitive> {
         grads.get::<B>(self)
     }
 
+    /// Remove and return this tensor's gradient from `grads`, if present.
     pub fn grad_remove(&self, grads: &mut Gradients) -> Option<B::FloatTensorPrimitive> {
         grads.remove::<B>(self)
     }
 
+    /// Replace this tensor's gradient in `grads` with `grad`.
     pub fn grad_replace(&self, grads: &mut Gradients, grad: B::FloatTensorPrimitive) {
         grads.remove::<B>(self);
         grads.register::<B>(self.node.id, grad);

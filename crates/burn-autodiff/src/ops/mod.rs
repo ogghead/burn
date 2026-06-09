@@ -2,6 +2,8 @@ mod activation;
 mod backward;
 mod base;
 mod bool_tensor;
+/// Block-level gradient (activation) checkpointing.
+pub mod checkpoint;
 #[cfg(feature = "distributed")]
 mod distributed;
 mod int_tensor;

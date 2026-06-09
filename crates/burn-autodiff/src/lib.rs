@@ -28,6 +28,11 @@ pub(crate) mod graph;
 // Exported for backend extension
 pub use graph::NodeId;
 pub(crate) mod tensor;
+// Autodiff tensor primitive (`FloatTensor<Autodiff<B>>`). Re-exported for
+// backend extensions such as the block-level checkpointing bridge. Hidden from
+// docs (and the missing-docs lint) as it is an internal extension surface.
+#[doc(hidden)]
+pub use tensor::AutodiffTensor;
 pub(crate) mod utils;
 
 mod backend;

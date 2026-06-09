@@ -43,6 +43,9 @@ mod macros;
 
 /// Dispatch backend module.
 pub mod backend;
+/// Block-level activation checkpointing bridge.
+#[cfg(feature = "autodiff")]
+pub mod checkpoint;
 /// Dispatch device module.
 pub mod device;
 mod ops;
@@ -50,6 +53,8 @@ mod ops;
 pub mod tensor;
 
 pub use backend::*;
+#[cfg(feature = "autodiff")]
+pub use checkpoint::*;
 pub use device::*;
 pub use tensor::*;
 

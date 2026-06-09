@@ -15,7 +15,13 @@ version.workspace = true
 workspace = true
 
 [features]
-default = ["std", "fusion", "autotune", "burn-cubecl/default", "cubecl/default"]
+# NOTE (diffusion-app): `fusion` is back in the default (fused inference). It was
+# briefly removed to isolate the high-res LoRA-training OOM, but block-level
+# gradient checkpointing (flux-klein lora_train/checkpoint.rs) — which runs each
+# block detached/no-grad in the forward and recomputes in the backward — bounds
+# the live activation footprint independently of fusion's lazy buffering, so
+# fusion can stay on for both inference and training.
+default = ["std", "autotune", "fusion", "burn-cubecl/default", "cubecl/default"]
 doc = ["burn-cubecl/doc"]
 std = ["burn-cubecl/std", "cubecl/std"]
 tracing = [

@@ -82,6 +82,58 @@ impl core::fmt::Debug for Graph {
 
 static STATE: Mutex<Option<GraphLocator>> = Mutex::new(None);
 
+#[cfg(feature = "std")]
+std::thread_local! {
+    /// Re-entrancy depth of [`backward`](AutodiffClient::backward) on the current
+    /// thread.
+    ///
+    /// Block-level activation checkpointing recomputes a block inside the
+    /// backward of a custom op by spinning up a *fresh* first-order autodiff
+    /// graph and calling `.backward()` on it. That nested backward runs while
+    /// the outer backward still holds the outer graph's per-graph mutex.
+    ///
+    /// [`GraphCleaner::cleanup_orphaned_entries`] iterates **every** graph and
+    /// locks each one's mutex; doing so from the nested backward would try to
+    /// re-lock the outer graph the current thread already holds, deadlocking on
+    /// the non-reentrant mutex. The orphan sweep is a best-effort GC, so we
+    /// simply skip it while nested and let the outermost backward perform it
+    /// once it has released all per-graph locks.
+    static BACKWARD_DEPTH: core::cell::Cell<u32> = const { core::cell::Cell::new(0) };
+}
+
+/// Increments the nested-backward depth for the current thread and returns a
+/// guard that decrements it on drop. Returns the depth *after* incrementing
+/// (1 == outermost backward).
+#[cfg(feature = "std")]
+fn enter_backward() -> BackwardDepthGuard {
+    let depth = BACKWARD_DEPTH.with(|d| {
+        let next = d.get() + 1;
+        d.set(next);
+        next
+    });
+    BackwardDepthGuard { depth }
+}
+
+#[cfg(feature = "std")]
+struct BackwardDepthGuard {
+    depth: u32,
+}
+
+#[cfg(feature = "std")]
+impl BackwardDepthGuard {
+    /// True when this is the outermost backward on the thread.
+    fn is_outermost(&self) -> bool {
+        self.depth == 1
+    }
+}
+
+#[cfg(feature = "std")]
+impl Drop for BackwardDepthGuard {
+    fn drop(&mut self) {
+        BACKWARD_DEPTH.with(|d| d.set(d.get().saturating_sub(1)));
+    }
+}
+
 impl GraphMutexClient {
     /// Retrieves or creates a graph for the given [NodeId] and parent dependencies.
     ///
@@ -117,6 +169,9 @@ impl AutodiffClient for GraphMutexClient {
 
     #[cfg(not(feature = "distributed"))]
     fn backward<B: Backend>(&self, root: AutodiffTensor<B>) -> Gradients {
+        #[cfg(feature = "std")]
+        let depth = enter_backward();
+
         let node_id = root.node.id;
         let graph = GraphMutexClient::graph(root.node.id, &[]);
 
@@ -127,13 +182,26 @@ impl AutodiffClient for GraphMutexClient {
                 .backward::<GraphCleaner, B>(root.node, root.primitive, node_id)
         }; // lock released
 
-        GraphCleaner::cleanup_orphaned_entries();
+        // Only the outermost backward on this thread may sweep orphaned graphs:
+        // a nested backward (block-checkpoint recompute) runs while the outer
+        // graph's mutex is held, and the sweep would re-lock it and deadlock.
+        #[cfg(feature = "std")]
+        let should_cleanup = depth.is_outermost();
+        #[cfg(not(feature = "std"))]
+        let should_cleanup = true;
+
+        if should_cleanup {
+            GraphCleaner::cleanup_orphaned_entries();
+        }
 
         grads
     }
 
     #[cfg(feature = "distributed")]
     fn backward<B: DistributedBackend>(&self, root: AutodiffTensor<B>) -> Gradients {
+        #[cfg(feature = "std")]
+        let depth = enter_backward();
+
         let node_id = root.node.id;
         let graph = GraphMutexClient::graph(root.node.id, &[]);
 
@@ -144,7 +212,15 @@ impl AutodiffClient for GraphMutexClient {
                 .backward::<GraphCleaner, B>(root.node, root.primitive, node_id)
         }; // lock released
 
-        GraphCleaner::cleanup_orphaned_entries();
+        // See the non-distributed impl: skip the orphan sweep while nested.
+        #[cfg(feature = "std")]
+        let should_cleanup = depth.is_outermost();
+        #[cfg(not(feature = "std"))]
+        let should_cleanup = true;
+
+        if should_cleanup {
+            GraphCleaner::cleanup_orphaned_entries();
+        }
 
         grads
     }

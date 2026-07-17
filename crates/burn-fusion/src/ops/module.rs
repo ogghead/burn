@@ -1529,6 +1529,94 @@ impl<B: FusionBackend> ModuleOps<Fusion<B>> for Fusion<B> {
             .output()
     }
 
+    /// Route the attention backward THROUGH fusion to the inner backend
+    /// (burn-cubecl → the fused cubek FlashAttention backward), instead of the
+    /// trait default's decomposed host fallback. Without this override the
+    /// backward is the training-step bottleneck (a host-composed loop of
+    /// discrete matmuls).
+    ///
+    /// Gated: `ATTN_FUSED_BWD=1` enables the fused route; unset/0 keeps the
+    /// trait-default fallback byte-for-byte (safe rollout lever while the
+    /// tiled kernels land). Masked / biased / softcapped attention always
+    /// takes the fallback — the fused kernel only implements the plain case,
+    /// and the inner backend re-checks the same guards anyway.
+    fn attention_backward(
+        query: FloatTensor<Fusion<B>>,
+        key: FloatTensor<Fusion<B>>,
+        value: FloatTensor<Fusion<B>>,
+        out: FloatTensor<Fusion<B>>,
+        grad_out: FloatTensor<Fusion<B>>,
+        mask: Option<burn_backend::tensor::BoolTensor<Fusion<B>>>,
+        attn_bias: Option<FloatTensor<Fusion<B>>>,
+        options: burn_backend::ops::AttentionModuleOptions,
+    ) -> (
+        FloatTensor<Fusion<B>>,
+        FloatTensor<Fusion<B>>,
+        FloatTensor<Fusion<B>>,
+    ) {
+        #[cfg(feature = "std")]
+        let fused_enabled = std::env::var("ATTN_FUSED_BWD").map(|v| v == "1").unwrap_or(false);
+        #[cfg(not(feature = "std"))]
+        let fused_enabled = false;
+
+        if !fused_enabled || mask.is_some() || attn_bias.is_some() || options.softcap.is_some() {
+            // Same behavior as having no override at all.
+            return burn_backend::ops::attention::attention_backward_fallback::<Fusion<B>>(
+                query, key, value, out, grad_out, mask, attn_bias, options,
+            );
+        }
+
+        make_ops!(
+            AttentionBackwardOps,
+            AttentionBackwardOpIr,
+            |args: &AttentionBackwardOpIr, handles: &mut HandleContainer<B::Handle>| {
+                let query = handles.get_float_tensor::<B>(&args.query);
+                let key = handles.get_float_tensor::<B>(&args.key);
+                let value = handles.get_float_tensor::<B>(&args.value);
+                let out = handles.get_float_tensor::<B>(&args.out);
+                let grad_out = handles.get_float_tensor::<B>(&args.grad_out);
+
+                let (grad_q, grad_k, grad_v) = B::attention_backward(
+                    query,
+                    key,
+                    value,
+                    out,
+                    grad_out,
+                    None,
+                    None,
+                    args.options.clone().into(),
+                );
+
+                handles.register_float_tensor::<B>(&args.grad_query.id, grad_q);
+                handles.register_float_tensor::<B>(&args.grad_key.id, grad_k);
+                handles.register_float_tensor::<B>(&args.grad_value.id, grad_v);
+            }
+        );
+
+        let streams = StreamId::current();
+
+        let client = query.client.clone();
+        let desc = AttentionBackwardOpIr::create(
+            query.into_ir(),
+            key.into_ir(),
+            value.into_ir(),
+            out.into_ir(),
+            grad_out.into_ir(),
+            options.into(),
+            || client.create_empty_handle(),
+        );
+
+        let [grad_query, grad_key, grad_value] = client
+            .register(
+                streams,
+                OperationIr::Module(ModuleOperationIr::AttentionBackward(desc.clone())),
+                AttentionBackwardOps::<B>::new(desc),
+            )
+            .outputs();
+
+        (grad_query, grad_key, grad_value)
+    }
+
     fn rfft(
         signal: FloatTensor<Fusion<B>>,
         dim: usize,

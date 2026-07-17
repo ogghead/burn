@@ -62,7 +62,22 @@ impl<R: FusionRuntime> OrderedExecution<R> {
         self.num_executed += ordering.len();
 
         for id in ordering {
-            let op = &self.operations[*id];
+            // Context-rich panic for the long-standing plan/queue mismatch OOB
+            // ("len is 1 but the index is 1"). The full plan/queue dump is
+            // emitted just before execution by `execute_block_optimization`
+            // (FUSION PLAN/QUEUE MISMATCH); this panic ties the two together.
+            let op = match self.operations.get(*id) {
+                Some(op) => op,
+                None => panic!(
+                    "fusion ordering OOB: index {} >= operations len {} \
+                     (num_executed={}, ordering={:?}) — see FUSION PLAN/QUEUE \
+                     MISMATCH error log for the full plan dump",
+                    id,
+                    self.operations.len(),
+                    self.num_executed,
+                    ordering
+                ),
+            };
             op.execute(handles);
         }
     }

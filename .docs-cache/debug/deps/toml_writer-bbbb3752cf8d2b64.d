@@ -1,0 +1,10 @@
+/home/ogghead/new-ltx2/burn/.docs-cache/debug/deps/toml_writer-bbbb3752cf8d2b64.d: /home/ogghead/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/toml_writer-1.0.6+spec-1.1.0/src/lib.rs /home/ogghead/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/toml_writer-1.0.6+spec-1.1.0/src/integer.rs /home/ogghead/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/toml_writer-1.0.6+spec-1.1.0/src/key.rs /home/ogghead/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/toml_writer-1.0.6+spec-1.1.0/src/string.rs /home/ogghead/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/toml_writer-1.0.6+spec-1.1.0/src/value.rs /home/ogghead/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/toml_writer-1.0.6+spec-1.1.0/src/write.rs
+
+/home/ogghead/new-ltx2/burn/.docs-cache/debug/deps/libtoml_writer-bbbb3752cf8d2b64.rmeta: /home/ogghead/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/toml_writer-1.0.6+spec-1.1.0/src/lib.rs /home/ogghead/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/toml_writer-1.0.6+spec-1.1.0/src/integer.rs /home/ogghead/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/toml_writer-1.0.6+spec-1.1.0/src/key.rs /home/ogghead/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/toml_writer-1.0.6+spec-1.1.0/src/string.rs /home/ogghead/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/toml_writer-1.0.6+spec-1.1.0/src/value.rs /home/ogghead/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/toml_writer-1.0.6+spec-1.1.0/src/write.rs
+
+/home/ogghead/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/toml_writer-1.0.6+spec-1.1.0/src/lib.rs:
+/home/ogghead/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/toml_writer-1.0.6+spec-1.1.0/src/integer.rs:
+/home/ogghead/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/toml_writer-1.0.6+spec-1.1.0/src/key.rs:
+/home/ogghead/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/toml_writer-1.0.6+spec-1.1.0/src/string.rs:
+/home/ogghead/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/toml_writer-1.0.6+spec-1.1.0/src/value.rs:
+/home/ogghead/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/toml_writer-1.0.6+spec-1.1.0/src/write.rs:

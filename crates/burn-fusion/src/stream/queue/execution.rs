@@ -33,11 +33,83 @@ impl<R: FusionRuntime> OperationQueue<R> {
     ) {
         log_execution_table(stream_id, &step.strategy, &self.global);
 
+        // FORENSICS for the long-standing ordering.rs index-OOB panic ("len is
+        // 1 but the index is 1", deterministic on some LoRA-training datasets):
+        // a (possibly cached) execution plan whose orderings reference indices
+        // past the live queue is about to OOB in execute_operations. Dump the
+        // full plan/queue shape BEFORE the panic so the mismatch is diagnosable
+        // from production logs. Cost when healthy: one recursive max() walk.
+        let max_idx = strategy_max_index(&step.strategy);
+        if let Some(m) = max_idx {
+            if m >= self.operations.len() {
+                // Full dump only for the first few occurrences per process —
+                // the first capture of this dump repeated on EVERY register of
+                // a corrupted stream and flooded the journal (the queue reset
+                // above should make repeats impossible, but never assume).
+                use core::sync::atomic::{AtomicU32, Ordering};
+                static DUMPS: AtomicU32 = AtomicU32::new(0);
+                let n = DUMPS.fetch_add(1, Ordering::Relaxed);
+                if n < 5 {
+                    log::error!(
+                        "FUSION PLAN/QUEUE MISMATCH stream={stream_id:?}: strategy max index {m} >= \
+                         operations len {} (global len {}, relative len {}); strategy shape: {}; \
+                         global ops: [{}]",
+                        self.operations.len(),
+                        self.global.len(),
+                        self.relative.len(),
+                        render_strategy_shape(&step.strategy),
+                        self.global
+                            .iter()
+                            .map(|op| {
+                                let d = format!("{op:?}");
+                                d.chars().take(80).collect::<String>()
+                            })
+                            .collect::<Vec<_>>()
+                            .join(" | "),
+                    );
+                } else {
+                    log::error!(
+                        "FUSION PLAN/QUEUE MISMATCH (dump {n} suppressed): max index {m} >= \
+                         operations len {} (global len {})",
+                        self.operations.len(),
+                        self.global.len(),
+                    );
+                }
+            }
+        }
+
         let mut operations = Vec::new();
         core::mem::swap(&mut operations, &mut self.operations);
 
-        let (operations, num_drained) =
-            run_strategy(step, &mut self.converter, handles, operations);
+        // PATCH (diffusion-app): panic-safe execution (upstream tracel-ai/burn
+        // #4827, open). `operations` was just moved out of `self`; if the
+        // strategy panics mid-execution (observed: a cubecl device-server error
+        // latched by a failed autotune allocation makes a tensor read panic),
+        // the unwind used to leave this queue INCONSISTENT — `self.operations`
+        // empty while `self.global`/`self.relative` keep their (and future)
+        // entries. Every subsequent register on the stream then hits the
+        // ordering index-OOB, an unbounded panic storm that floods the journal
+        // and eventually kills the GPU worker thread. Instead: catch the
+        // panic, reset the queue to a CONSISTENT empty state (leaking the
+        // in-flight ops' handles — the device pool drain on the training/
+        // generation error path reclaims them), and resume the original panic
+        // so the caller still sees one honest failure.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            run_strategy(step, &mut self.converter, handles, operations)
+        }));
+        let (operations, num_drained) = match result {
+            Ok(r) => r,
+            Err(payload) => {
+                log::error!(
+                    "fusion strategy execution panicked; resetting stream queue to a consistent \
+                     empty state ({} global ops dropped) and propagating the panic",
+                    self.global.len()
+                );
+                self.global.clear();
+                self.reset_relative();
+                std::panic::resume_unwind(payload);
+            }
+        };
 
         self.operations = operations;
         self.drain_queue(num_drained, handles);
@@ -89,6 +161,37 @@ fn run_strategy<R: FusionRuntime>(
         execute_strategy::<R>(&mut optimization.strategy, &mut guard, &mut execution);
     }
     execution.finish()
+}
+
+/// Largest operation index referenced anywhere in a strategy tree (None = the
+/// strategy references no operations). Forensics helper for the ordering-OOB
+/// panic; see `execute_block_optimization`.
+fn strategy_max_index<O>(strategy: &ExecutionStrategy<O>) -> Option<usize> {
+    match strategy {
+        ExecutionStrategy::Optimization { ordering, .. } => ordering.iter().copied().max(),
+        ExecutionStrategy::Operations { ordering } => ordering.iter().copied().max(),
+        ExecutionStrategy::Composed(items) => {
+            items.iter().filter_map(|i| strategy_max_index(i)).max()
+        }
+    }
+}
+
+/// Compact one-line rendering of a strategy tree with its orderings.
+fn render_strategy_shape<O>(strategy: &ExecutionStrategy<O>) -> String {
+    match strategy {
+        ExecutionStrategy::Optimization { ordering, score, .. } => {
+            format!("Opt(score={score}, ordering={ordering:?})")
+        }
+        ExecutionStrategy::Operations { ordering } => format!("Ops(ordering={ordering:?})"),
+        ExecutionStrategy::Composed(items) => format!(
+            "Composed[{}]",
+            items
+                .iter()
+                .map(|i| render_strategy_shape(i))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
 }
 
 fn execute_strategy<R: FusionRuntime>(

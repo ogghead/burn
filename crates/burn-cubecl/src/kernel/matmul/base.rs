@@ -48,7 +48,19 @@ pub fn matmul<R: CubeRuntime>(
             Ok(out)
         }
         #[cfg(feature = "autotune")]
-        MatmulStrategy::Autotune => Ok(matmul_autotune(lhs, rhs, out, out_dtype)),
+        MatmulStrategy::Autotune => {
+            // LORA_PIN_MATMUL_FALLBACK: force the reference naive matmul instead of
+            // autotune's speed-only selection (diagnostic for the >1024px divergence —
+            // see fused_matmul_autotune). Covers the non-fused matmuls that the fused
+            // fallback delegates to.
+            if std::env::var("LORA_PIN_MATMUL_FALLBACK").is_ok() {
+                let out = out.unwrap_or_else(|| init_matmul_output(&lhs, &rhs, out_dtype));
+                launch_matmul_naive(&Strategy::Naive, lhs, rhs, out.clone())?;
+                Ok(out)
+            } else {
+                Ok(matmul_autotune(lhs, rhs, out, out_dtype))
+            }
+        }
     }
 }
 

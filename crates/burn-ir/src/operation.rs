@@ -267,6 +267,9 @@ pub enum ModuleOperationIr {
     IRfft(IRfftOpIr),
     /// Operation corresponding to [attention](burn_backend::ops::ModuleOps::attention).
     Attention(AttentionOpIr),
+    /// Operation corresponding to
+    /// [attention_backward](burn_backend::ops::ModuleOps::attention_backward).
+    AttentionBackward(AttentionBackwardOpIr),
     /// Operation corresponding to [ctc_loss](burn_backend::ops::ModuleOps::ctc_loss).
     CtcLoss(CtcLossOpIr),
     /// Operation corresponding to
@@ -1807,6 +1810,26 @@ pub struct AttentionOpIr {
     pub out: TensorIr,
 }
 
+/// Backward of scaled-dot-product attention: given the forward inputs, the
+/// forward output and the output gradient, produce grads for query/key/value.
+/// Only the PLAIN case (no mask / no bias) is emitted by burn-fusion — masked
+/// or biased attention keeps the decomposed fallback path. The three grad
+/// outputs are f32 regardless of the input dtype (dK/dV sum over the sequence
+/// axis and exceed f16 range; every backend implementation returns f32).
+#[derive(Clone, Debug, Hash, PartialEq, Serialize, Deserialize)]
+#[allow(missing_docs)]
+pub struct AttentionBackwardOpIr {
+    pub query: TensorIr,
+    pub key: TensorIr,
+    pub value: TensorIr,
+    pub out: TensorIr,
+    pub grad_out: TensorIr,
+    pub options: AttentionOptionsIr,
+    pub grad_query: TensorIr,
+    pub grad_key: TensorIr,
+    pub grad_value: TensorIr,
+}
+
 #[derive(Clone, Debug, Hash, PartialEq, Serialize, Deserialize)]
 #[allow(missing_docs)]
 pub struct CtcLossOpIr {
@@ -2938,6 +2961,16 @@ impl ModuleOperationIr {
                     Box::new([&repr.query, &repr.key, &repr.value].into_iter())
                 }
             }
+            ModuleOperationIr::AttentionBackward(repr) => Box::new(
+                [
+                    &repr.query,
+                    &repr.key,
+                    &repr.value,
+                    &repr.out,
+                    &repr.grad_out,
+                ]
+                .into_iter(),
+            ),
             ModuleOperationIr::CtcLoss(repr) => Box::new(
                 [
                     &repr.log_probs,
@@ -3045,6 +3078,9 @@ impl ModuleOperationIr {
             ModuleOperationIr::Rfft(repr) => Box::new([&repr.out_re, &repr.out_im].into_iter()),
             ModuleOperationIr::IRfft(repr) => Box::new([&repr.out_signal].into_iter()),
             ModuleOperationIr::Attention(repr) => Box::new([&repr.out].into_iter()),
+            ModuleOperationIr::AttentionBackward(repr) => {
+                Box::new([&repr.grad_query, &repr.grad_key, &repr.grad_value].into_iter())
+            }
             ModuleOperationIr::CtcLoss(repr) => Box::new([&repr.out].into_iter()),
             ModuleOperationIr::CtcLossBackward(repr) => Box::new([&repr.out].into_iter()),
         }
@@ -3279,6 +3315,13 @@ impl ModuleOperationIr {
                 if let Some(attn_bias) = &mut repr.attn_bias {
                     attn_bias.mark_read_only(nodes, &mut output);
                 }
+            }
+            ModuleOperationIr::AttentionBackward(repr) => {
+                repr.query.mark_read_only(nodes, &mut output);
+                repr.key.mark_read_only(nodes, &mut output);
+                repr.value.mark_read_only(nodes, &mut output);
+                repr.out.mark_read_only(nodes, &mut output);
+                repr.grad_out.mark_read_only(nodes, &mut output);
             }
             ModuleOperationIr::CtcLoss(repr) => {
                 repr.log_probs.mark_read_only(nodes, &mut output);

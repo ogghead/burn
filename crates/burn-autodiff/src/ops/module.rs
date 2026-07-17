@@ -1885,7 +1885,91 @@ impl<B: Backend, C: CheckpointStrategy> ModuleOps<Autodiff<B, C>> for Autodiff<B
         attn_bias: Option<FloatTensor<Autodiff<B, C>>>,
         options: AttentionModuleOptions,
     ) -> FloatTensor<Autodiff<B, C>> {
-        attention_fallback::<Self>(query, key, value, mask, attn_bias, options)
+        // Additive bias is also differentiable; the decomposed autograd path
+        // propagates its gradient too, so keep it for the bias case. Otherwise
+        // use a single tracked op whose backward calls `B::attention_backward`
+        // (fused on cube; decomposed default elsewhere) — O(seq) memory.
+        if attn_bias.is_some() {
+            return attention_fallback::<Self>(query, key, value, mask, attn_bias, options);
+        }
+
+        #[derive(Debug)]
+        struct AttentionBackward;
+
+        impl<B: Backend> Backward<B, 3> for AttentionBackward {
+            type State = (
+                B::FloatTensorPrimitive,
+                B::FloatTensorPrimitive,
+                B::FloatTensorPrimitive,
+                B::FloatTensorPrimitive,
+                Option<B::BoolTensorPrimitive>,
+                AttentionModuleOptions,
+            );
+
+            fn backward(
+                self,
+                ops: Ops<Self::State, 3>,
+                grads: &mut Gradients,
+                _checkpointer: &mut Checkpointer,
+            ) {
+                let [node_q, node_k, node_v] = ops.parents;
+                let grad = grads.consume::<B>(&ops.node);
+                let (q, k, v, out, mask, options) = ops.state;
+
+                let (grad_q, grad_k, grad_v) =
+                    B::attention_backward(q, k, v, out, grad, mask, None, options);
+
+                if let Some(node) = node_q {
+                    grads.register::<B>(node.id, grad_q);
+                }
+                if let Some(node) = node_k {
+                    grads.register::<B>(node.id, grad_k);
+                }
+                if let Some(node) = node_v {
+                    grads.register::<B>(node.id, grad_v);
+                }
+            }
+        }
+
+        // Bool tensors aren't autodiff-tracked, so `mask` is already the inner
+        // backend primitive.
+        let mask_prim = mask;
+
+        match AttentionBackward
+            .prepare::<C>([query.node.clone(), key.node.clone(), value.node.clone()])
+            .compute_bound()
+            .stateful()
+        {
+            OpsKind::Tracked(prep) => {
+                let out = B::attention(
+                    query.primitive.clone(),
+                    key.primitive.clone(),
+                    value.primitive.clone(),
+                    mask_prim.clone(),
+                    None,
+                    options.clone(),
+                );
+                prep.finish(
+                    (
+                        query.primitive,
+                        key.primitive,
+                        value.primitive,
+                        out.clone(),
+                        mask_prim,
+                        options,
+                    ),
+                    out,
+                )
+            }
+            OpsKind::UnTracked(prep) => prep.finish(B::attention(
+                query.primitive,
+                key.primitive,
+                value.primitive,
+                mask_prim,
+                None,
+                options,
+            )),
+        }
     }
 
     fn ctc_loss(

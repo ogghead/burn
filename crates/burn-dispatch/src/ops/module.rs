@@ -626,6 +626,39 @@ impl ModuleOps<Self> for Dispatch {
         )
     }
 
+    fn attention_backward(
+        query: FloatTensor<Self>,
+        key: FloatTensor<Self>,
+        value: FloatTensor<Self>,
+        out: FloatTensor<Self>,
+        grad_out: FloatTensor<Self>,
+        mask: Option<burn_backend::tensor::BoolTensor<Self>>,
+        attn_bias: Option<FloatTensor<Self>>,
+        options: burn_backend::ops::AttentionModuleOptions,
+    ) -> (FloatTensor<Self>, FloatTensor<Self>, FloatTensor<Self>) {
+        // Forward to the inner backend's attention_backward (burn-cubecl → the
+        // fused cubek FlashAttention backward, O(seq) memory, for the no-mask
+        // case). Without this override, the trait default falls back to the
+        // decomposed O(seq²) `attention_backward_fallback`.
+        multi_op!(
+            inputs[
+                (query, float),
+                (key, float),
+                (value, float),
+                (out, float),
+                (grad_out, float)
+            ],
+            opt_inputs[(mask, bool), (attn_bias, float)],
+            outputs[(dq, Float), (dk, Float), (dv, Float)],
+            opt_outputs[],
+            {
+                let res =
+                    B::attention_backward(query, key, value, out, grad_out, mask, attn_bias, options);
+                (res.0, res.1, res.2)
+            }
+        )
+    }
+
     fn layer_norm(
         tensor: FloatTensor<Self>,
         gamma: FloatTensor<Self>,

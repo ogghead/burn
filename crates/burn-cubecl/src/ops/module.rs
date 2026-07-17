@@ -329,16 +329,98 @@ where
             );
         }
 
-        kernel::attention::attention(
-            query,
-            key,
-            value,
-            mask,
-            attn_bias,
-            options,
-            Default::default(),
-        )
-        .expect("Kernel to never fail")
+        // LORA_ATTN_FLASHUNIT forces the fixed, non-autotuned, O(seq) FlashUnit
+        // forward (bypassing autotune's speed-only kernel selection). Diagnostic for
+        // whether an autotuned attention-forward kernel selected at the >1024px
+        // sequence bucket is numerically wrong (the >1024 training divergence). The
+        // backward is fixed either way, so convergence under FlashUnit isolates the
+        // cause to the forward autotune AND exonerates the fixed FA-backward.
+        // ATTN_QK_QUANT=fp8 forces the Stage A FP8 (e4m3) quantized-QK^T flash
+        // kernel (Sage-v1 style: per-16-row-tile symmetric quant + K mean
+        // smoothing, prepass on device per call). Env-forced ONLY — never
+        // registered in autotune, so the tuner cache is untouched — and it
+        // FAILS LOUD (panic via the expect below) when the device lacks the
+        // e4m3 MMA instruction. Inference path; don't set during training.
+        //
+        // ATTN_SPARGE_TAU=<f32 in (0,1]> forces the Stage B training-free
+        // block-sparse kernel (SpargeAttn style: device predictor keeps the
+        // top-tau softmax-mass kv blocks per q-stage row; the global loop
+        // skips the rest). Composes with ATTN_QK_QUANT=fp8 (sparse on the
+        // quant substrate). Host-side fallback to dense when predicted
+        // sparsity < ATTN_SPARGE_MIN_SPARSITY (default 0.15); a materialized
+        // mask always takes the dense route. Env-forced ONLY — autotune
+        // untouched. Inference path; don't set during training.
+        let quant = std::env::var("ATTN_QK_QUANT").as_deref() == Ok("fp8");
+        let sparge_tau = std::env::var("ATTN_SPARGE_TAU")
+            .ok()
+            .map(|v| {
+                v.parse::<f32>().unwrap_or_else(|_| {
+                    panic!("ATTN_SPARGE_TAU={v}: expected a float in (0, 1]")
+                })
+            })
+            .filter(|_| mask.is_none());
+        let strategy = if let Some(tau) = sparge_tau {
+            let min_sparsity = std::env::var("ATTN_SPARGE_MIN_SPARSITY")
+                .ok()
+                .map(|v| {
+                    v.parse::<f32>().unwrap_or_else(|_| {
+                        panic!("ATTN_SPARGE_MIN_SPARSITY={v}: expected a float in [0, 1]")
+                    })
+                })
+                .unwrap_or(0.15);
+            kernel::attention::AttentionStrategy::Sparse {
+                tau,
+                min_sparsity,
+                quant,
+            }
+        } else if quant {
+            kernel::attention::AttentionStrategy::QuantFp8
+        } else if std::env::var("LORA_ATTN_FLASHUNIT").is_ok() {
+            kernel::attention::AttentionStrategy::FlashUnit
+        } else {
+            Default::default()
+        };
+        kernel::attention::attention(query, key, value, mask, attn_bias, options, strategy)
+            .expect("Kernel to never fail")
+    }
+
+    fn attention_backward(
+        query: FloatTensor<Self>,
+        key: FloatTensor<Self>,
+        value: FloatTensor<Self>,
+        out: FloatTensor<Self>,
+        grad_out: FloatTensor<Self>,
+        mask: Option<BoolTensor<Self>>,
+        attn_bias: Option<FloatTensor<Self>>,
+        options: AttentionModuleOptions,
+    ) -> (FloatTensor<Self>, FloatTensor<Self>, FloatTensor<Self>) {
+        // The fused FlashAttention backward kernel supports plain + causal
+        // attention (with an arbitrary softmax scale). Defer to the decomposed
+        // fallback for an explicit bool mask, additive bias, or softcap.
+        //
+        // LORA_DECOMPOSED_BWD forces the decomposed fallback (dense-F32 / O(seq)
+        // blocked) for the PLAIN case too — a diagnostic to test whether the fused
+        // cubek FA-backward is the source of the >1024px training divergence (the
+        // fused forward + fallbacks are exonerated; the fixed FA-backward is the
+        // remaining suspect). The fallback is the reference decomposition, so if
+        // 1280 converges under it, the fused FA-backward is the culprit.
+        // `is_causal` also defers: the naive dq kernel has a known f16-causal
+        // gap (cubek-bwd dq_f16_causal test), and the training workloads that
+        // reach this path (FLUX) are never causal. Revisit when the tiled
+        // kernels validate causal.
+        if std::env::var("LORA_DECOMPOSED_BWD").is_ok()
+            || mask.is_some()
+            || attn_bias.is_some()
+            || options.softcap.is_some()
+            || options.is_causal
+        {
+            return burn_backend::ops::attention::attention_backward_fallback::<Self>(
+                query, key, value, out, grad_out, mask, attn_bias, options,
+            );
+        }
+
+        kernel::attention::flash_attention_backward(query, key, value, out, grad_out, options)
+            .expect("Flash attention backward kernel to never fail")
     }
 
     fn has_ctc_loss_backward() -> bool {

@@ -1,0 +1,6 @@
+cargo::rerun-if-changed=build.rs
+cargo::rerun-if-env-changed=ROCM_PATH
+cargo::rerun-if-env-changed=HIP_PATH
+cargo::warning=Could not find 'hipconfig' in your PATH. You should install ROCm HIP or ensure 'hipconfig' is available. For more information please visit https://rocm.docs.amd.com/projects/install-on-linux/en/latest/.
+cargo::warning=Defaulting to the latest feature of HIP bindings available: hip_51831
+cargo:rustc-cfg=feature="hip_51831"

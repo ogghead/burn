@@ -1067,6 +1067,39 @@ impl_ir_create!(
     dtype = query.dtype
 );
 
+impl AttentionBackwardOpIr {
+    /// Multi-output create (the `impl_ir_create!` macro is single-output):
+    /// grads mirror the input shapes. Dtype is F32 for all three — every
+    /// backend implementation returns f32 grads (dK/dV sum over the sequence
+    /// axis and exceed f16 range), so the IR must describe f32 or fused
+    /// successors would miscompile against the actual handles.
+    pub fn create(
+        query: TensorIr,
+        key: TensorIr,
+        value: TensorIr,
+        out: TensorIr,
+        grad_out: TensorIr,
+        options: AttentionOptionsIr,
+        mut new_id: impl FnMut() -> TensorId,
+    ) -> Self {
+        let grad_query = TensorIr::uninit(new_id(), query.shape.clone(), DType::F32);
+        let grad_key = TensorIr::uninit(new_id(), key.shape.clone(), DType::F32);
+        let grad_value = TensorIr::uninit(new_id(), value.shape.clone(), DType::F32);
+
+        AttentionBackwardOpIr {
+            query,
+            key,
+            value,
+            out,
+            grad_out,
+            options,
+            grad_query,
+            grad_key,
+            grad_value,
+        }
+    }
+}
+
 impl_ir_create!(
     CtcLossOpIr {
         log_probs: TensorIr,

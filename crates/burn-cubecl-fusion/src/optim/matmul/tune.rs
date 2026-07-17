@@ -31,6 +31,18 @@ pub fn fused_matmul_autotune<R: Runtime>(
     optimization: MatmulOptimizationTuneArg<R>,
     context: &mut Context<CubeFusionHandle<R>>,
 ) {
+    // LORA_PIN_MATMUL_FALLBACK: bypass autotune entirely and run the reference
+    // decomposition (execute_fallback) for every fused matmul. Diagnostic for whether
+    // autotune's speed-only kernel selection (no correctness gate) picks a subtly-wrong
+    // accelerated/TMA kernel at the >1024px sequence bucket — the last untested,
+    // seq-dependent suspect for the >1024 training divergence after attention + optimizer
+    // + non-attention forward were all exonerated. If 1280 converges under this, a fused
+    // matmul kernel selected only at the larger bucket is the culprit.
+    if std::env::var("LORA_PIN_MATMUL_FALLBACK").is_ok() {
+        optimization.execute_fallback(context);
+        return;
+    }
+
     static TUNER: LocalTuner<FusedMatmulAutotuneKey, CubeTuneId> = local_tuner!();
 
     let tunables = TUNER.init(|| {
@@ -41,6 +53,16 @@ pub fn fused_matmul_autotune<R: Runtime>(
         const PRIORITY_NEVER: i8 = -1;
 
         let accelerated = TuneGroup::<FusedMatmulAutotuneKey>::new("accelerated", |key| {
+            // LORA_NO_ACCEL_MATMUL: exclude the accelerated (cmma/TMA) fused-matmul
+            // kernels so autotune can only pick the `unit` kernels (SimpleUnit/DoubleUnit)
+            // + gemv + fallback. Diagnostic for the >1024px divergence: unit kernels use
+            // modest workspace (won't OOM like the 25GB TMA probe) and higher-precision
+            // accumulation (won't NaN like naive) yet still run at ~seq6400. If 1280
+            // converges with accelerated excluded, an accelerated/TMA kernel selected only
+            // at the larger sequence bucket is the culprit.
+            if std::env::var("LORA_NO_ACCEL_MATMUL").is_ok() {
+                return PRIORITY_NEVER;
+            }
             if matches!(key.matmul_key.analysis.kind, MatmulKind::General) {
                 match key.matmul_key.analysis.scale_global {
                     MatmulGlobalScale::Large => PRIORITY_MAX,

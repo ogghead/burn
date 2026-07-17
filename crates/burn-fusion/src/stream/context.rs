@@ -552,6 +552,19 @@ impl RelativeOps for ModuleOperationIr {
                 options: desc.options.clone(),
                 out: desc.out.to_relative(converter),
             }),
+            ModuleOperationIr::AttentionBackward(desc) => {
+                ModuleOperationIr::AttentionBackward(AttentionBackwardOpIr {
+                    query: desc.query.to_relative(converter),
+                    key: desc.key.to_relative(converter),
+                    value: desc.value.to_relative(converter),
+                    out: desc.out.to_relative(converter),
+                    grad_out: desc.grad_out.to_relative(converter),
+                    options: desc.options.clone(),
+                    grad_query: desc.grad_query.to_relative(converter),
+                    grad_key: desc.grad_key.to_relative(converter),
+                    grad_value: desc.grad_value.to_relative(converter),
+                })
+            }
             ModuleOperationIr::CtcLoss(desc) => ModuleOperationIr::CtcLoss(CtcLossOpIr {
                 log_probs: desc.log_probs.to_relative(converter),
                 targets: desc.targets.to_relative(converter),

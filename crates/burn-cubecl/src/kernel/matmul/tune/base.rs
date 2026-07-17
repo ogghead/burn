@@ -26,6 +26,33 @@ fn matmul_input_gen<R: CubeRuntime>(
     (lhs.clone(), rhs.clone(), out.copy())
 }
 
+/// When the `CUBEK_NO_TF32` env var is set to `1`/`true`, tensor-core (Cmma/Mma)
+/// matmul kernels are removed from autotune consideration for f32 operands so
+/// that f32 matmuls run on the CUDA-core ("unit") path at full f32 precision.
+///
+/// Tensor cores cannot perform true-f32 MMA; if the f32->TF32 stage downcast is
+/// disabled (see cubek-matmul `adjust_dtypes`) but an accelerated kernel is still
+/// selected, the kernel launch fails (`simple_async_mma` "unknown error"). This
+/// flag steers selection away from those kernels entirely. Read once and cached.
+fn tf32_disabled() -> bool {
+    use std::sync::OnceLock;
+    static DISABLED: OnceLock<bool> = OnceLock::new();
+    *DISABLED.get_or_init(|| {
+        matches!(
+            std::env::var("CUBEK_NO_TF32").as_deref(),
+            Ok("1") | Ok("true") | Ok("TRUE") | Ok("True")
+        )
+    })
+}
+
+/// Whether both matmul operands are f32 (the only case the TF32 downcast applies
+/// to, and the only case that cannot run on tensor cores at full precision).
+fn key_is_f32(key: &MatmulAutotuneKey) -> bool {
+    use cubecl::ir::{ElemType, FloatKind, StorageType};
+    let f32_storage = StorageType::Scalar(ElemType::Float(FloatKind::F32));
+    key.definition.elem_lhs == f32_storage && key.definition.elem_rhs == f32_storage
+}
+
 /// Executes autotune on matmul operations
 pub fn matmul_autotune<R: CubeRuntime>(
     lhs: CubeTensor<R>,
@@ -48,6 +75,11 @@ pub fn matmul_autotune<R: CubeRuntime>(
         const PRIORITY_NEVER: i8 = -1;
 
         let accelerated = TuneGroup::<MatmulAutotuneKey>::new("accelerated", |key| {
+            // CUBEK_NO_TF32: keep f32 matmuls off tensor cores (which can't do
+            // true-f32 MMA) so they run on the CUDA-core "unit" path instead.
+            if tf32_disabled() && key_is_f32(key) {
+                return PRIORITY_NEVER;
+            }
             if matches!(key.analysis.kind, MatmulKind::General) {
                 match key.analysis.scale_global {
                     MatmulGlobalScale::Large => PRIORITY_MAX,

@@ -505,8 +505,17 @@ impl AutodiffBackend for Dispatch {
                     )),
                 )))
             }
-            DispatchTensorKind::Autodiff(_) => {
-                panic!("Autodiff should not wrap an autodiff tensor.")
+            DispatchTensorKind::Autodiff(boxed) => {
+                // Idempotent `from_inner`: the input is ALREADY autodiff. This happens in
+                // PARTIAL-gradient training (block-targeted full fine-tune) where a
+                // gradient-checkpoint recompute / optimizer hands back an already-tracked
+                // tensor. Detach to the plain inner, then re-wrap as a FRESH autodiff leaf
+                // (no graph carried over) — instead of panicking.
+                let already = DispatchTensor {
+                    kind: DispatchTensorKind::Autodiff(boxed),
+                    checkpointing,
+                };
+                return Self::from_inner(Self::inner(already));
             }
         };
         DispatchTensor {

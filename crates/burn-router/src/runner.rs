@@ -1669,6 +1669,28 @@ impl<B: BackendIr> RunnerClient for Runner<B> {
 
                     handles.register_float_tensor::<B>(&desc.out.id, output);
                 }
+                ModuleOperationIr::AttentionBackward(desc) => {
+                    let query = handles.get_float_tensor::<B>(&desc.query);
+                    let key = handles.get_float_tensor::<B>(&desc.key);
+                    let value = handles.get_float_tensor::<B>(&desc.value);
+                    let out = handles.get_float_tensor::<B>(&desc.out);
+                    let grad_out = handles.get_float_tensor::<B>(&desc.grad_out);
+
+                    let (grad_q, grad_k, grad_v) = B::attention_backward(
+                        query,
+                        key,
+                        value,
+                        out,
+                        grad_out,
+                        None,
+                        None,
+                        desc.options.clone().into(),
+                    );
+
+                    handles.register_float_tensor::<B>(&desc.grad_query.id, grad_q);
+                    handles.register_float_tensor::<B>(&desc.grad_key.id, grad_k);
+                    handles.register_float_tensor::<B>(&desc.grad_value.id, grad_v);
+                }
                 ModuleOperationIr::CtcLoss(desc) => {
                     let log_probs = handles.get_float_tensor::<B>(&desc.log_probs);
                     let targets = handles.get_int_tensor::<B>(&desc.targets);

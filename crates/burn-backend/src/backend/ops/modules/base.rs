@@ -710,6 +710,30 @@ pub trait ModuleOps<B: Backend> {
         options: AttentionModuleOptions,
     ) -> FloatTensor<B>;
 
+    /// Backward of [`attention`](ModuleOps::attention). Given the forward inputs,
+    /// the forward output `out`, and the upstream gradient `grad_out`, returns
+    /// `(grad_query, grad_key, grad_value)`.
+    ///
+    /// The default decomposes the gradient via primitive ops
+    /// ([`attention_backward_fallback`](super::attention::attention_backward_fallback),
+    /// O(seq²) memory). Backends with a fused FlashAttention backward override
+    /// this to recompute scores on the fly (O(seq) memory).
+    #[allow(clippy::too_many_arguments)]
+    fn attention_backward(
+        query: FloatTensor<B>,
+        key: FloatTensor<B>,
+        value: FloatTensor<B>,
+        out: FloatTensor<B>,
+        grad_out: FloatTensor<B>,
+        mask: Option<BoolTensor<B>>,
+        attn_bias: Option<FloatTensor<B>>,
+        options: AttentionModuleOptions,
+    ) -> (FloatTensor<B>, FloatTensor<B>, FloatTensor<B>) {
+        super::attention::attention_backward_fallback::<B>(
+            query, key, value, out, grad_out, mask, attn_bias, options,
+        )
+    }
+
     /// Applies Layer Normalization over the last dimension of the input tensor.
     ///
     /// Computes `(x - mean) / sqrt(var + epsilon) * gamma + beta`, where `mean` and

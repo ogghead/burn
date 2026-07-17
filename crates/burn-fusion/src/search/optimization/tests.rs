@@ -214,6 +214,127 @@ fn interleaved_blocks_single_builder_preserves_other_ops() {
 }
 
 // ---------------------------------------------------------------------------
+// Hole-fill correctness (the WithHoles branch of StreamOptimizer::optimize).
+//
+// When the optimizer resolves interior "holes" across multiple iterations of
+// its fill loop, the accumulated global ordering must stay a valid permutation
+// of the resolved positions (in range, no duplicates). These tests guard that
+// invariant both end-to-end (through the block search) and directly at the
+// hole-removal remap (`remove_resolved_holes`), which is where the historical
+// bug lived: it dropped a positional PREFIX of `holes` instead of the actually
+// resolved local indices.
+// ---------------------------------------------------------------------------
+
+use super::stream::{is_valid_ordering, remove_resolved_holes};
+
+/// Collect every operation index referenced by a strategy tree, flattening
+/// through `Composed`. Used to assert the fully-resolved ordering is a valid,
+/// duplicate-free permutation.
+fn flatten_ordering(strategy: &ExecutionStrategy<TestOptimization>, out: &mut Vec<usize>) {
+    match strategy {
+        ExecutionStrategy::Optimization { ordering, .. }
+        | ExecutionStrategy::Operations { ordering } => out.extend(ordering.iter().copied()),
+        ExecutionStrategy::Composed(parts) => {
+            for part in parts {
+                flatten_ordering(part, out);
+            }
+        }
+    }
+}
+
+/// End-to-end: a stream whose interior holes force the hole-fill loop to run
+/// more than one iteration. Whatever ordering comes back — from the top-level
+/// `ordering` field and from the flattened strategy tree — must be a valid
+/// permutation of the resolved positions (in range, no duplicates).
+#[test]
+fn multi_iteration_hole_fill_yields_valid_permutation() {
+    let a1 = add(100, 101, 102);
+    let a2 = add(102, 103, 104);
+    let a3 = add(104, 105, 106);
+    let a4 = add(106, 107, 108);
+    let b1 = add(200, 201, 202);
+    let ops = vec![a1.clone(), a2.clone(), a3.clone(), a4.clone(), b1.clone()];
+
+    // builder0 fuses the A-prefix (a1,a2); builder1 fuses b1; builder2 fuses
+    // only a3. a3/a4 become interior holes (b1 resolves after them); the
+    // hole-fill sub-search resolves a3 then leaves a4 for a second iteration.
+    let res = run(
+        &ops,
+        vec![
+            vec![a1.clone(), a2.clone()],
+            vec![b1.clone()],
+            vec![a3.clone()],
+        ],
+    );
+
+    let n = ops.len();
+
+    // The BlockOptimization's own ordering must be a valid permutation.
+    assert!(
+        is_valid_ordering(&res.ordering, n),
+        "top-level ordering not a valid permutation: {:?}",
+        res.ordering,
+    );
+
+    // The flattened strategy ordering must match it exactly as a set (sorted),
+    // covering the full resolved range with no duplicates.
+    let mut flat = Vec::new();
+    flatten_ordering(&res.strategy, &mut flat);
+    assert!(
+        is_valid_ordering(&flat, n),
+        "flattened strategy ordering not a valid permutation: {flat:?}",
+    );
+
+    let mut sorted = flat.clone();
+    sorted.sort_unstable();
+    assert_eq!(sorted, (0..n).collect::<Vec<_>>(), "must cover 0..n exactly");
+
+    let mut top_sorted = res.ordering.clone();
+    top_sorted.sort_unstable();
+    assert_eq!(
+        top_sorted, sorted,
+        "top-level and strategy orderings must agree",
+    );
+}
+
+/// Direct proof that the fix matters: `remove_resolved_holes` must drop the
+/// holes the sub-search actually resolved (by local index), NOT a positional
+/// prefix. This constructs the exact case the historical `holes.drain(0..len)`
+/// bug got wrong — a NON-prefix resolved set — and shows the remaining holes
+/// (and thus the local->global remap) stay correct only with the fix.
+#[test]
+fn remove_resolved_holes_drops_exact_local_indices_not_prefix() {
+    // Global stream positions that are holes, in ascending order. These double
+    // as the local->global mapping used by `map_ordering`.
+    let holes = vec![3usize, 7, 8, 11];
+
+    // The sub-search resolved local indices {1, 3} (a NON-prefix subset:
+    // global positions 7 and 11), leaving locals {0, 2} (globals 3, 8) as the
+    // tail for the next iteration.
+    let resolved_local = vec![3usize, 1];
+
+    let mut fixed = holes.clone();
+    remove_resolved_holes(&mut fixed, &resolved_local);
+    assert_eq!(
+        fixed,
+        vec![3, 8],
+        "fix must leave exactly the UNresolved holes (globals 3 and 8)",
+    );
+
+    // The buggy positional-prefix drain would instead drop holes[0..2] = the
+    // FIRST two entries (globals 3 and 7) — dropping global 3 (never resolved)
+    // and keeping global 11 (already resolved). That leaves the WRONG tail and
+    // corrupts the remap. Assert the fix does NOT match that wrong behavior.
+    let mut buggy = holes.clone();
+    buggy.drain(0..resolved_local.len());
+    assert_eq!(buggy, vec![8, 11], "sanity: buggy prefix-drain leaves 8,11");
+    assert_ne!(
+        fixed, buggy,
+        "fix must diverge from the buggy positional-prefix drain",
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Within a single block, operations are registered in stream order. A builder
 // whose pattern would only match a *reordered* version of the stream cannot
 // fuse. This documents that reordering does NOT happen inside a block (unlike

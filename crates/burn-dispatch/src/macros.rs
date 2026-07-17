@@ -781,6 +781,44 @@ macro_rules! binary_float_arms {
                     }
                 }
             )*
+            // MIXED tracked/untracked operands (e.g. residual `x + frozen_block_out` in
+            // block-targeted full fine-tuning, where one side is autodiff-tracked and the
+            // other is a frozen/plain tensor). Promote the PLAIN operand to an autodiff
+            // CONSTANT leaf via `from_inner` (no grad flows to it — standard autodiff
+            // semantics), then run the op on the autodiff backend. Without these arms the
+            // (float,float) match falls through to the panic below.
+            $(
+                #[cfg(all(feature = "autodiff", $cfg))]
+                ($crate::DispatchTensorKind::Autodiff(lhs_inner), $crate::DispatchTensorKind::$Backend($rhs_inner)) => {
+                    match *lhs_inner {
+                        $crate::DispatchTensorKind::$Backend($lhs_inner) => {
+                            with_autodiff_backend!($Backend, checkpointing, |B| {
+                                let $lhs_inner = $lhs_inner.autodiff();
+                                let $rhs_inner = <B as burn_backend::AutodiffBackend>::from_inner($rhs_inner.float());
+                                wrap_float!(@wrap_autodiff $kind, $Backend, checkpointing, { $body })
+                            })
+                        }
+                        $crate::DispatchTensorKind::Autodiff(..) => unreachable!("Autodiff should not wrap an autodiff tensor."),
+                        #[allow(unreachable_patterns)]
+                        _ => panic!("The provided tensors are not on the same backend."),
+                    }
+                }
+                #[cfg(all(feature = "autodiff", $cfg))]
+                ($crate::DispatchTensorKind::$Backend($lhs_inner), $crate::DispatchTensorKind::Autodiff(rhs_inner)) => {
+                    match *rhs_inner {
+                        $crate::DispatchTensorKind::$Backend($rhs_inner) => {
+                            with_autodiff_backend!($Backend, checkpointing, |B| {
+                                let $lhs_inner = <B as burn_backend::AutodiffBackend>::from_inner($lhs_inner.float());
+                                let $rhs_inner = $rhs_inner.autodiff();
+                                wrap_float!(@wrap_autodiff $kind, $Backend, checkpointing, { $body })
+                            })
+                        }
+                        $crate::DispatchTensorKind::Autodiff(..) => unreachable!("Autodiff should not wrap an autodiff tensor."),
+                        #[allow(unreachable_patterns)]
+                        _ => panic!("The provided tensors are not on the same backend."),
+                    }
+                }
+            )*
             #[allow(unreachable_patterns)]
             (lhs, rhs) => {
                 panic!(

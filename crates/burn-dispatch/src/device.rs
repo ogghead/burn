@@ -115,12 +115,22 @@ pub(crate) fn validate_checkpointing(
     rhs: Option<crate::CheckpointingStrategy>,
 ) -> Option<crate::CheckpointingStrategy> {
     match (lhs, rhs) {
+        // Same strategy: keep it. DIFFERENT strategies: merge rather than panic — this
+        // happens in block-targeted full fine-tuning where a gradient-checkpointed
+        // (`Balanced`) tracked tensor meets a non-checkpointed (`None`) one in the same op
+        // (e.g. the residual add of a frozen block's output). Prefer `Balanced` so the op
+        // still checkpoints; correctness is unaffected (strategy only governs activation
+        // recompute, not the math).
         (Some(lhs), Some(rhs)) => {
-            assert_eq!(
-                lhs, rhs,
-                "Autodiff strategy mismatch: {lhs:?} vs {rhs:?}. Tensors in the same operation must share a strategy."
-            );
-            Some(lhs)
+            if lhs == rhs {
+                Some(lhs)
+            } else if lhs == crate::CheckpointingStrategy::Balanced
+                || rhs == crate::CheckpointingStrategy::Balanced
+            {
+                Some(crate::CheckpointingStrategy::Balanced)
+            } else {
+                Some(lhs)
+            }
         }
         (None, None) => None,
         // When tensors are created on non-autodiff device there is no checkpointing, but

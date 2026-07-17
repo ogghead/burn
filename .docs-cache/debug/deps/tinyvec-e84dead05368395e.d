@@ -1,0 +1,11 @@
+/home/ogghead/new-ltx2/burn/.docs-cache/debug/deps/tinyvec-e84dead05368395e.d: /home/ogghead/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinyvec-1.10.0/src/lib.rs /home/ogghead/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinyvec-1.10.0/src/array.rs /home/ogghead/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinyvec-1.10.0/src/array/const_generic_impl.rs /home/ogghead/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinyvec-1.10.0/src/arrayvec.rs /home/ogghead/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinyvec-1.10.0/src/arrayvec_drain.rs /home/ogghead/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinyvec-1.10.0/src/slicevec.rs /home/ogghead/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinyvec-1.10.0/src/tinyvec.rs
+
+/home/ogghead/new-ltx2/burn/.docs-cache/debug/deps/libtinyvec-e84dead05368395e.rmeta: /home/ogghead/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinyvec-1.10.0/src/lib.rs /home/ogghead/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinyvec-1.10.0/src/array.rs /home/ogghead/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinyvec-1.10.0/src/array/const_generic_impl.rs /home/ogghead/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinyvec-1.10.0/src/arrayvec.rs /home/ogghead/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinyvec-1.10.0/src/arrayvec_drain.rs /home/ogghead/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinyvec-1.10.0/src/slicevec.rs /home/ogghead/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinyvec-1.10.0/src/tinyvec.rs
+
+/home/ogghead/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinyvec-1.10.0/src/lib.rs:
+/home/ogghead/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinyvec-1.10.0/src/array.rs:
+/home/ogghead/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinyvec-1.10.0/src/array/const_generic_impl.rs:
+/home/ogghead/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinyvec-1.10.0/src/arrayvec.rs:
+/home/ogghead/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinyvec-1.10.0/src/arrayvec_drain.rs:
+/home/ogghead/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinyvec-1.10.0/src/slicevec.rs:
+/home/ogghead/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinyvec-1.10.0/src/tinyvec.rs:

@@ -414,6 +414,22 @@ where
             || options.softcap.is_some()
             || options.is_causal
         {
+            // Throttled diagnostics: a dense f32 fallback at training seq is
+            // ~1s+/call — if ANY per-step call lands here, it dominates the
+            // step. Log the reason + shape for the first few occurrences.
+            use core::sync::atomic::{AtomicU32, Ordering};
+            static LOGGED: AtomicU32 = AtomicU32::new(0);
+            if LOGGED.fetch_add(1, Ordering::Relaxed) < 16 {
+                log::warn!(
+                    "attention_backward FALLBACK: mask={} bias={} softcap={} causal={} env={} q_shape={:?}",
+                    mask.is_some(),
+                    attn_bias.is_some(),
+                    options.softcap.is_some(),
+                    options.is_causal,
+                    std::env::var("LORA_DECOMPOSED_BWD").is_ok(),
+                    query.shape().dims::<4>(),
+                );
+            }
             return burn_backend::ops::attention::attention_backward_fallback::<Self>(
                 query, key, value, out, grad_out, mask, attn_bias, options,
             );

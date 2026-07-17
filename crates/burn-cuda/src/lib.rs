@@ -250,4 +250,92 @@ mod tests {
         gate("sparse kernel branch", 0.0);
         gate("dense fallback branch", 1.1);
     }
+
+    /// Regression for the in-app mixed-dtype matmul routing (Task A). Production
+    /// base-linear matmuls are bf16 weight × f32 activation; through the FUSION
+    /// backend they must run on tensor cores (the cubek adjust_dtypes mixed→TF32
+    /// branch), not the ~14-24ms single-warp unit kernel. This drives the exact
+    /// path (Fusion<CubeBackend<Cuda>>) at the LoRA down-proj shape and times a
+    /// matmul+bias (epilogue triggers the FusedMatmul), for f32×f32, bf16×bf16,
+    /// and the mixed f32×bf16 case. Run:
+    ///
+    /// ```text
+    /// CUDA_VISIBLE_DEVICES=0 cargo test -p burn-cuda --release \
+    ///   fused_mixed_matmul_routing -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "needs a CUDA GPU; run explicitly on GPU 0"]
+    fn fused_mixed_matmul_routing() {
+        use burn_backend::TensorData;
+        use burn_backend::ops::FloatTensorOps;
+
+        type B = Cuda; // Fusion<CubeBackend<CudaRuntime, f32, i32, u8>>
+        let device: CudaDevice = Default::default();
+
+        let (m, k, n) = (6848usize, 3072usize, 32usize);
+        let fill = |len: usize, v: f32| vec![v; len];
+
+        // Autotune caches its (possibly pre-fix "unit") decision per key on disk;
+        // a stale cache masks the fix. Best-effort clear so the test is
+        // deterministic. (The cwd-relative path varies by invocation, so try both.)
+        let _ = std::fs::remove_dir_all("target/autotune");
+        let _ = std::fs::remove_dir_all("crates/burn-cuda/target/autotune");
+
+        let time_case = |label: &str, lhs_dt: DType, rhs_dt: DType| -> f64 {
+            let lhs_data = TensorData::new(fill(m * k, 0.02), vec![m, k]).convert_dtype(lhs_dt);
+            let rhs_data = TensorData::new(fill(k * n, 0.02), vec![k, n]).convert_dtype(rhs_dt);
+            // Upload ONCE (host→device) so the loop measures the matmul, not PCIe.
+            let lhs = B::float_from_data(lhs_data, &device);
+            let rhs = B::float_from_data(rhs_data, &device);
+
+            let run_once = || {
+                // Clone = cheap handle clone (no re-upload); matmul consumes them.
+                let out = B::float_matmul(lhs.clone(), rhs.clone());
+                let out = B::float_add_scalar(out, 1.0.into()); // epilogue → FusedMatmul
+                // Force execution (blocks). Output is small [m,n] so readback is cheap.
+                let _ = cubecl::future::block_on(B::float_into_data(out));
+            };
+
+            for _ in 0..5 {
+                run_once(); // warmup + autotune
+            }
+            let iters = 30;
+            let start = std::time::Instant::now();
+            for _ in 0..iters {
+                run_once();
+            }
+            let ms = start.elapsed().as_secs_f64() * 1e3 / iters as f64;
+            println!("FUSED_MM {label} [{m}x{n}x{k}]: {ms:.3} ms/call");
+            ms
+        };
+
+        // Same-dtype baselines (already accelerated pre-fix).
+        time_case("f32xf32", DType::F32, DType::F32);
+        time_case("bf16xbf16", DType::BF16, DType::BF16);
+        time_case("f16xf16", DType::F16, DType::F16);
+
+        // MIXED float pairs — the regression. Pre-fix these fell to the unit
+        // kernel (4–18ms); with the cubek adjust_dtypes mixed→TF32 branch they
+        // must run accelerated (~0.4–0.6ms incl. readback/trace overhead).
+        // 2ms bound leaves generous margin over accelerated while still catching
+        // a unit-kernel regression.
+        let mixed = [
+            ("f32xbf16", DType::F32, DType::BF16),
+            ("bf16xf32", DType::BF16, DType::F32),
+            ("f32xf16", DType::F32, DType::F16),
+            ("f16xf32", DType::F16, DType::F32),
+            ("f16xbf16", DType::F16, DType::BF16),
+            ("bf16xf16", DType::BF16, DType::F16),
+        ];
+        for (label, lhs, rhs) in mixed {
+            let ms = time_case(label, lhs, rhs);
+            assert!(
+                ms < 2.0,
+                "mixed {label} matmul ran {ms:.3} ms/call (>= 2ms) — fell to the unit \
+                 kernel; the cubek adjust_dtypes mixed→TF32 branch isn't engaging. \
+                 If this regressed after a clean build, clear target/autotune (stale \
+                 cache pins the pre-fix unit decision)."
+            );
+        }
+    }
 }

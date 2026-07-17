@@ -1919,6 +1919,32 @@ impl<B: Backend, C: CheckpointStrategy> ModuleOps<Autodiff<B, C>> for Autodiff<B
                 let (grad_q, grad_k, grad_v) =
                     B::attention_backward(q, k, v, out, grad, mask, None, options);
 
+                // ATTN_BWD_BF16_GRADS=1: every attention_backward implementation
+                // returns f32 grads (range safety for the dK/dV query-axis sums),
+                // but registering them as f32 makes EVERY downstream grad matmul
+                // in the block (qkv/proj/MLP backward) run f32/TF32 at half
+                // tensor-core throughput — measured as the dominant backward
+                // cost (~3.7s/step at 1280, nsys). bf16 keeps the f32 exponent
+                // RANGE (the f16 overflow that motivated f32 cannot recur) at
+                // reduced mantissa — the precision every native-bf16 trainer
+                // accepts. Env-gated pending the identity A/B.
+                #[cfg(feature = "std")]
+                let bf16_grads = std::env::var("ATTN_BWD_BF16_GRADS")
+                    .map(|v| v == "1")
+                    .unwrap_or(false);
+                #[cfg(not(feature = "std"))]
+                let bf16_grads = false;
+                let (grad_q, grad_k, grad_v) = if bf16_grads {
+                    let bf16 = burn_std::FloatDType::BF16;
+                    (
+                        B::float_cast(grad_q, bf16),
+                        B::float_cast(grad_k, bf16),
+                        B::float_cast(grad_v, bf16),
+                    )
+                } else {
+                    (grad_q, grad_k, grad_v)
+                };
+
                 if let Some(node) = node_q {
                     grads.register::<B>(node.id, grad_q);
                 }

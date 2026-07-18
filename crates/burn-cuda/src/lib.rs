@@ -450,24 +450,47 @@ mod tests {
             maybe_drop(3);
             let out = B::float_add(out, bias.clone());
             junk.take();
-            let _ = cubecl::future::block_on(B::float_into_data(out));
+            let data = cubecl::future::block_on(B::float_into_data(out)).unwrap();
+            data.to_vec::<f32>().unwrap()[0]
         };
 
         for p in 0..4 {
             step(p); // warmup all positions
         }
+        // Correctness: the result is independent of where the (unused) junk Drop
+        // lands. matmul(0.01·[256]·0.01) = 0.0256; +0.5 = 0.5256; ·1.5 = 0.7884;
+        // +0.5 = 1.2884. Absorbing drops out-of-band must not corrupt the fused
+        // compute at any drop position.
+        let expected = 1.2884_f32;
         let iters = 16;
         let mut times = Vec::with_capacity(iters);
+        let (before_bytes, _, _) = device_memory_usage(&device).unwrap_or((0, 0, 0));
         for i in 0..iters {
             let start = std::time::Instant::now();
-            step(i % 4);
+            let v = step(i % 4);
             times.push(start.elapsed().as_secs_f64() * 1e3);
+            assert!(
+                (v - expected).abs() < 1e-2,
+                "iter {i} drop_pos {}: fused result {v} != expected {expected} — \
+                 out-of-band Drop absorption corrupted the compute",
+                i % 4
+            );
         }
+        let (after_bytes, _, _) = device_memory_usage(&device).unwrap_or((0, 0, 0));
         let median = {
             let mut t = times.clone();
             t.sort_by(|a, b| a.partial_cmp(b).unwrap());
             t[t.len() / 2]
         };
-        println!("DROP_FRAG per-iter ms (varying drop pos): {times:?}\n  median={median:.2} ms");
+        println!(
+            "DROP_FRAG per-iter ms: {times:?}\n  median={median:.2} ms | live bytes {before_bytes}→{after_bytes}"
+        );
+        // Memory release: live bytes must not grow across the loop (Drops must
+        // still free the junk temporaries out-of-band — no dealloc-timing creep).
+        assert!(
+            after_bytes <= before_bytes + 8 * 1024 * 1024,
+            "live device memory grew {before_bytes}→{after_bytes} across the loop — \
+             out-of-band Drops are not freeing (memory creep)"
+        );
     }
 }

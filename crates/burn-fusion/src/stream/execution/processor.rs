@@ -7,6 +7,54 @@ use crate::stream::execution::{Action, Policy};
 use crate::stream::store::{ExecutionPlan, ExecutionPlanId, ExecutionPlanStore, ExecutionTrigger};
 use crate::{NumOperations, OperationFuser};
 
+/// Diagnostic (env-gated by `BURN_FUSION_EXPLORE_TRACE=1`) for the per-step
+/// fused-kernel recompilation storm: a plan is only compiled the first time its
+/// RELATIVE op sequence is explored, so a healthy training loop should stop
+/// exploring new plans after warmup. This hashes each explored relative
+/// op-sequence and reports, per explore, whether that exact relative graph has
+/// been explored before. If the same `relhash` keeps re-appearing as `new=false`
+/// (re-explored despite an identical plan already in the store) → a plan
+/// lookup/matching bug. If every explore is a distinct `new=true` hash for the
+/// same logical graph → something step-varying is leaking into the RELATIVE IR
+/// (relativization leak). Consecutive-step counts crack which one it is.
+#[cfg(feature = "std")]
+fn explore_trace(relative: &[OperationIr]) {
+    use std::collections::HashSet;
+    use std::hash::{Hash, Hasher};
+    use std::sync::{Mutex, OnceLock};
+
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    if !*ENABLED.get_or_init(|| {
+        matches!(std::env::var("BURN_FUSION_EXPLORE_TRACE").as_deref(), Ok("1") | Ok("true"))
+    }) {
+        return;
+    }
+
+    static SEEN: OnceLock<Mutex<HashSet<u64>>> = OnceLock::new();
+    static TOTAL: OnceLock<Mutex<u64>> = OnceLock::new();
+
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    relative.hash(&mut hasher);
+    let relhash = hasher.finish();
+
+    let seen = SEEN.get_or_init(|| Mutex::new(HashSet::new()));
+    let total = TOTAL.get_or_init(|| Mutex::new(0));
+    let (is_new, distinct, count) = {
+        let mut seen = seen.lock().unwrap();
+        let is_new = seen.insert(relhash);
+        let mut total = total.lock().unwrap();
+        *total += 1;
+        (is_new, seen.len(), *total)
+    };
+    eprintln!(
+        "[EXPLORE_TRACE] relhash={relhash:016x} ops={} new={is_new} distinct_plans={distinct} total_explores={count}",
+        relative.len()
+    );
+}
+
+#[cfg(not(feature = "std"))]
+fn explore_trace(_relative: &[OperationIr]) {}
+
 /// Process a [stream segment](StreamSegment) following a [policy](Policy).
 pub(crate) struct Processor<O> {
     policy: Policy<O>,
@@ -149,6 +197,8 @@ impl<O: NumOperations> Processor<O> {
     ) -> ExecutionPlanId {
         let num_optimized = optimization.ordering.len();
         let relative = &operations[0..num_optimized];
+
+        explore_trace(relative);
 
         {
             let total_ops = operations.len();

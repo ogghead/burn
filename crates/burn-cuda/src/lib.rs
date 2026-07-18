@@ -338,4 +338,74 @@ mod tests {
             );
         }
     }
+
+    /// Repro for the per-step fused-kernel RECOMPILATION storm. A fixed fusible
+    /// graph (matmul → mul_scalar → add) run many times with a DIFFERENT scalar
+    /// each iteration (mimics sigma changing every training step). If scalars are
+    /// runtime args (correct), the fused kernel compiles once (iter 0) and every
+    /// later iter is fast. If a step-varying value leaks into the kernel identity,
+    /// every iter recompiles (NVRTC ~50–200ms) and stays slow — the training
+    /// step-time storm.
+    ///
+    /// ```text
+    /// CUDA_VISIBLE_DEVICES=0 cargo test -p burn-cuda --release \
+    ///   fused_scalar_recompile_storm -- --ignored --nocapture
+    /// # to see the compiles: prefix CUBECL_DEBUG_LOG=stderr and grep -c START_KERNEL_COMPILATION
+    /// ```
+    #[test]
+    #[ignore = "needs a CUDA GPU; run explicitly on GPU 0"]
+    fn fused_scalar_recompile_storm() {
+        use burn_backend::Scalar;
+        use burn_backend::TensorData;
+        use burn_backend::ops::FloatTensorOps;
+
+        type B = Cuda;
+        let device: CudaDevice = Default::default();
+        let (m, k, n) = (512usize, 512usize, 512usize);
+
+        let a = B::float_from_data(TensorData::new(vec![0.01f32; m * k], vec![m, k]), &device);
+        let w = B::float_from_data(TensorData::new(vec![0.01f32; k * n], vec![k, n]), &device);
+        let bias = B::float_from_data(TensorData::new(vec![0.5f32; m * n], vec![m, n]), &device);
+
+        // A different scalar every iteration (like per-step sigma).
+        let step = |scalar: f64| {
+            let out = B::float_matmul(a.clone(), w.clone());
+            let out = B::float_mul_scalar(out, Scalar::Float(scalar));
+            let out = B::float_add(out, bias.clone());
+            let _ = cubecl::future::block_on(B::float_into_data(out));
+        };
+
+        // Warmup: first unique-scalar iters trigger the initial compile(s).
+        step(0.001);
+        step(0.002);
+
+        // Steady state: each iter uses a NEW scalar. Should be fast (cached kernel)
+        // if scalars are runtime args; slow every time if the scalar leaks into the
+        // kernel identity → recompile.
+        let iters = 12;
+        let mut times = Vec::with_capacity(iters);
+        for i in 0..iters {
+            let scalar = 0.1 + (i as f64) * 0.01337; // distinct each iter
+            let start = std::time::Instant::now();
+            step(scalar);
+            times.push(start.elapsed().as_secs_f64() * 1e3);
+        }
+        let median = {
+            let mut t = times.clone();
+            t.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            t[t.len() / 2]
+        };
+        println!(
+            "RECOMPILE_STORM per-iter ms (distinct scalar each): {times:?}\n  median={median:.2} ms"
+        );
+        // A cached fused kernel at this size is well under 5ms/iter; a per-iter
+        // NVRTC recompile is tens–hundreds of ms.
+        assert!(
+            median < 10.0,
+            "median {median:.2} ms/iter with a distinct scalar each step — the fused \
+             kernel is recompiling per step (scalar leaks into kernel identity). This \
+             is the training recompilation storm."
+        );
+    }
+
 }

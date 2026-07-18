@@ -367,6 +367,12 @@ pub trait FloatTensorOps<B: Backend> {
     fn float_mixed_linear(input: FloatTensor<B>, weight: FloatTensor<B>) -> FloatTensor<B> {
         let input = Self::float_cast(input, FloatDType::BF16);
         let weight = Self::float_cast(weight, FloatDType::BF16);
+        // Broadcast weight [in, out] to the input's rank before the batch matmul,
+        // exactly like `ModuleOps::linear` — the model calls this with rank-3
+        // [batch, tokens, in] activations against the rank-2 weight, and
+        // `float_matmul` requires equal ranks.
+        let ndims = input.shape().num_dims();
+        let weight = crate::backend::ops::linear::unsqueeze_leading::<B>(weight, ndims);
         Self::float_cast(Self::float_matmul(input, weight), FloatDType::F32)
     }
 

@@ -3827,8 +3827,14 @@ impl<B: Backend, C: CheckpointStrategy> FloatTensorOps<Self> for Autodiff<B, C> 
                 let weight_bf16 = ops.state;
 
                 unary::<B, _>(ops.parents, ops.node, grads, |grad| {
+                    // grad_out is rank-D [.., m, out]; weightᵀ is rank-2 [out, in].
+                    // Broadcast weightᵀ to grad's rank before the batch matmul,
+                    // mirroring ModuleOps::linear_x_backward (float_matmul needs
+                    // equal ranks).
+                    let grad_shape = grad.shape();
                     let grad_bf16 = B::float_cast(grad, burn_std::FloatDType::BF16);
                     let weight_t = B::float_transpose(weight_bf16);
+                    let weight_t = unsqueeze_like::<B>(weight_t, grad_shape);
                     let grad_input = B::float_matmul(grad_bf16, weight_t);
                     // Return the gradient in f32 — never a bf16 graph tensor.
                     B::float_cast(grad_input, burn_std::FloatDType::F32)

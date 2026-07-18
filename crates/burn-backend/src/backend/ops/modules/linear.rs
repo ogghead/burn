@@ -32,7 +32,10 @@ pub(crate) fn linear<B: Backend>(
 }
 
 /// Reshape a tensor by prepending size-1 dimensions until it has `target_ndims` dimensions.
-fn unsqueeze_leading<B: Backend>(tensor: FloatTensor<B>, target_ndims: usize) -> FloatTensor<B> {
+///
+/// Public so the mixed-precision linear op ([`crate::ops::FloatTensorOps::float_mixed_linear`])
+/// can reuse the exact same weight-broadcast semantics as [`linear`].
+pub fn unsqueeze_leading<B: Backend>(tensor: FloatTensor<B>, target_ndims: usize) -> FloatTensor<B> {
     let shape = tensor.shape();
     let ndims = shape.num_dims();
     if ndims >= target_ndims {

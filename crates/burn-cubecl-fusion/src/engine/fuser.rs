@@ -15,15 +15,18 @@ use burn_std::{
 };
 use cubecl::ir::ElemType;
 
-/// Out-of-band Drop handling (default ON). A `Drop` on an empty fuser is recorded
-/// as a deallocation instead of closing the fuser and fragmenting the stream (the
-/// per-step recompilation storm). Set `BURN_FUSION_DROP_OOB=0` to restore the old
-/// close-on-empty behavior. Read once and cached.
+/// Out-of-band Drop handling. EXPERIMENTAL, DEFAULT OFF: the absorb-into-block
+/// approach is UNSAFE — it bakes per-occurrence drop membership into a cacheable
+/// plan, so a cache hit can free a handle a later plan still references
+/// (burn-ir/handle.rs "Should have handle for tensor" panic, observed in-app
+/// 2026-07-18). It DID reduce fragmentation (in-app explores 549→203) but crashed;
+/// the correct fix keeps drops execution-per-occurrence and out of plan identity.
+/// Opt in with `BURN_FUSION_DROP_OOB=1` for experiments only. Read once and cached.
 fn drop_out_of_band() -> bool {
     use std::sync::OnceLock;
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| {
-        !matches!(std::env::var("BURN_FUSION_DROP_OOB").as_deref(), Ok("0") | Ok("false"))
+        matches!(std::env::var("BURN_FUSION_DROP_OOB").as_deref(), Ok("1") | Ok("true"))
     })
 }
 

@@ -98,6 +98,20 @@ pub(crate) fn launch_matmul<R: CubeRuntime>(
 ) -> Result<(), MatmulSetupError> {
     let client = &out.client;
 
+    // BURN_MATMUL_SHAPE_LOG diagnostic: capture (m, n, k) before `lhs` is
+    // consumed below. out = [.., m, n]; lhs = [.., m, k].
+    let shape_log_mnk = {
+        let ls = lhs.meta.shape();
+        let os = out.meta.shape();
+        let lr = ls.num_dims();
+        let orr = os.num_dims();
+        if lr >= 2 && orr >= 2 {
+            Some((os[orr - 2], os[orr - 1], ls[lr - 1]))
+        } else {
+            None
+        }
+    };
+
     let lhs_quant_handles = lhs.quantized_handles();
     let out_dtype: DType = out.dtype;
 
@@ -169,6 +183,10 @@ pub(crate) fn launch_matmul<R: CubeRuntime>(
         rhs: rhs_dtype.into(),
         out: out_dtype.into(),
     });
+
+    if let Some((m, n, k)) = shape_log_mnk {
+        super::shape_log::record(m, n, k, lhs_dtype, rhs_dtype, out_dtype, "plain");
+    }
 
     cubek::matmul::launch::launch_ref(
         strategy,

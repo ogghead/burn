@@ -408,4 +408,66 @@ mod tests {
         );
     }
 
+    /// Fragmentation repro: identical fusable compute each iter, but a Drop of a
+    /// throwaway tensor interleaved at a VARYING position (mimics autodiff temp
+    /// dealloc-order nondeterminism). If a non-compute op landing mid-stream
+    /// re-chops the fused blocks → the blocks re-explore/recompile every iter →
+    /// the storm. Observe with the explore-trace:
+    ///
+    /// ```text
+    /// CUDA_VISIBLE_DEVICES=0 BURN_FUSION_EXPLORE_TRACE=1 cargo test -p burn-cuda \
+    ///   --release fused_drop_fragmentation -- --ignored --nocapture
+    /// # healthy: total_explores plateaus after warmup. storm: climbs every iter.
+    /// ```
+    #[test]
+    #[ignore = "needs a CUDA GPU; run explicitly on GPU 0"]
+    fn fused_drop_fragmentation() {
+        use burn_backend::ops::FloatTensorOps;
+        use burn_backend::{Scalar, TensorData};
+
+        type B = Cuda;
+        let device: CudaDevice = Default::default();
+        let (m, k, n) = (256usize, 256usize, 256usize);
+        let a = B::float_from_data(TensorData::new(vec![0.01f32; m * k], vec![m, k]), &device);
+        let w = B::float_from_data(TensorData::new(vec![0.01f32; k * n], vec![k, n]), &device);
+        let bias = B::float_from_data(TensorData::new(vec![0.5f32; m * n], vec![m, n]), &device);
+
+        let step = |drop_pos: usize| {
+            // A throwaway temporary whose Drop is positioned by drop_pos among the
+            // main fusable chain (matmul → add → mul → add).
+            let mut junk = Some(B::float_add(a.clone(), a.clone()));
+            let mut maybe_drop = |p: usize| {
+                if p == drop_pos {
+                    junk.take(); // drop → enqueues OperationIr::Drop at this position
+                }
+            };
+            maybe_drop(0);
+            let out = B::float_matmul(a.clone(), w.clone());
+            maybe_drop(1);
+            let out = B::float_add(out, bias.clone());
+            maybe_drop(2);
+            let out = B::float_mul_scalar(out, Scalar::Float(1.5));
+            maybe_drop(3);
+            let out = B::float_add(out, bias.clone());
+            junk.take();
+            let _ = cubecl::future::block_on(B::float_into_data(out));
+        };
+
+        for p in 0..4 {
+            step(p); // warmup all positions
+        }
+        let iters = 16;
+        let mut times = Vec::with_capacity(iters);
+        for i in 0..iters {
+            let start = std::time::Instant::now();
+            step(i % 4);
+            times.push(start.elapsed().as_secs_f64() * 1e3);
+        }
+        let median = {
+            let mut t = times.clone();
+            t.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            t[t.len() / 2]
+        };
+        println!("DROP_FRAG per-iter ms (varying drop pos): {times:?}\n  median={median:.2} ms");
+    }
 }

@@ -183,8 +183,36 @@ impl<R: FusionRuntime> MultiStream<R> {
             // fusion stream so it can't fragment plan identity (the per-step
             // recompilation storm). Free the handle now if no pending op on the
             // home stream still references the tensor, otherwise defer to that
-            // stream's next drain. Safe: a Drop is registered only when the
-            // frontend refcount hits 0, so no future op can reference this id.
+            // stream's next drain.
+            //
+            // Safety — two load-bearing invariants make the single-queue guard
+            // (`references` scans only `stream`'s own queue) complete:
+            //
+            // 1. No FUTURE op can reference this id. A `Drop` is registered by
+            //    `FusionTensor::drop` only when the frontend refcount hits 0
+            //    (tensor.rs), so no live `FusionTensor` for this id remains to be
+            //    submitted into any op on any stream.
+            //
+            // 2. No op on ANOTHER stream can reference this id, now or pending.
+            //    A tensor id is local to its home stream: when a `FusionTensor`
+            //    crosses a stream boundary (`Clone`/`into_ir` seeing
+            //    `self.stream != current`), `shared_view` mints a FRESH id and
+            //    `tag_shared_view` aliases the handle under it via
+            //    `register_handle(dst, handle.clone())` — an independent map entry
+            //    holding its own Arc-cloned handle. So foreign streams only ever
+            //    reference the alias `dst`, never this id; and freeing this id's
+            //    entry cannot disturb `dst`'s clone (the backing buffer survives on
+            //    `dst`'s refcount until its own Drop). `stream` here is the Drop's
+            //    home stream (FusionTensor::drop targets `self.stream`), so the
+            //    queue we scan is the only one this id can appear in.
+            //
+            // Memory timing (vs the rejected batched-drop option): this is a
+            // deferred free, but bounded — the id is freed at the first drain after
+            // its last referencing op drains, i.e. worst-case one drain window of
+            // extra lifetime. That matches the original in-stream Drop, which also
+            // only freed when its own drain reached it. `sweep_dropped` runs on
+            // EVERY drain and retains only still-referenced ids, so the deferred
+            // list never survives a drain unswept and cannot compound.
             if drop_out_of_band() {
                 match self.streams.get_mut(&stream) {
                     Some(s) if s.queue.references(ir.id) => s.queue.defer_drop(ir.id),

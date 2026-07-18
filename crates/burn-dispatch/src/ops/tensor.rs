@@ -106,6 +106,10 @@ impl FloatTensorOps<Self> for Dispatch {
         binary_float!((lhs, float), (rhs, float), |lhs, rhs| B::float_matmul(lhs, rhs) => Float)
     }
 
+    fn float_mixed_linear(input: FloatTensor<Self>, weight: FloatTensor<Self>) -> FloatTensor<Self> {
+        binary_float!((input, float), (weight, float), |input, weight| B::float_mixed_linear(input, weight) => Float)
+    }
+
     fn float_cross(
         lhs: FloatTensor<Self>,
         rhs: FloatTensor<Self>,

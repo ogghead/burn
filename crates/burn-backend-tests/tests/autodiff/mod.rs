@@ -48,6 +48,7 @@ mod log_sigmoid;
 mod mask;
 mod matmul;
 mod maxmin;
+mod mixed_linear;
 mod maxpool1d;
 mod maxpool2d;
 mod memory_management;

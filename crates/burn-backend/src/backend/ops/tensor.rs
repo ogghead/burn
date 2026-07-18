@@ -351,6 +351,25 @@ pub trait FloatTensorOps<B: Backend> {
     /// The result of multiplying the two tensors together using matrix multiplication.
     fn float_matmul(lhs: FloatTensor<B>, rhs: FloatTensor<B>) -> FloatTensor<B>;
 
+    /// Base-linear matmul run in bf16 for speed, returning f32 (musubi-style AMP).
+    ///
+    /// Computes `input @ weight` with a bf16 matmul (bf16 inputs, f32 accumulate)
+    /// and returns the result as f32. Intended for a frozen bf16 `weight` and an
+    /// f32 `input`: casting the input to bf16 makes the matmul run bf16×bf16
+    /// (~1.5-2x the coerced-TF32 rate) while callers keep their residual/optimizer
+    /// state in f32.
+    ///
+    /// This default is correct for leaf (non-autodiff) backends. The autodiff
+    /// backend MUST override it: a bf16 matmul left in the autodiff graph produces
+    /// bf16-rounded gradients that compound across layers (a confirmed melt). The
+    /// autodiff override runs bf16 compute in both forward and backward but keeps
+    /// the returned gradient f32.
+    fn float_mixed_linear(input: FloatTensor<B>, weight: FloatTensor<B>) -> FloatTensor<B> {
+        let input = Self::float_cast(input, FloatDType::BF16);
+        let weight = Self::float_cast(weight, FloatDType::BF16);
+        Self::float_cast(Self::float_matmul(input, weight), FloatDType::F32)
+    }
+
     /// Computes the cross product of two tensors along a given dimension.
     ///
     /// # Arguments

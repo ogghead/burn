@@ -3798,6 +3798,57 @@ impl<B: Backend, C: CheckpointStrategy> FloatTensorOps<Self> for Autodiff<B, C> 
         }
     }
 
+    fn float_mixed_linear(input: FloatTensor<Self>, weight: FloatTensor<Self>) -> FloatTensor<Self> {
+        // Mixed-precision base linear (musubi AMP). The forward runs bf16 compute
+        // on the inner backend and returns f32; the backward computes
+        // dL/dinput = matmul(bf16(grad), bf16(weight)ᵀ) but RETURNS IT F32.
+        //
+        // This is the whole point of the op: the bf16 is confined inside this
+        // node's primitive compute, so the autodiff graph only ever sees f32
+        // tensors and the residual-stream gradient is NEVER bf16-rounded (an
+        // explicit `.cast(bf16)` in the model made bf16 a real graph tensor,
+        // whose bf16 gradient compounded across ~32 blocks into a training melt).
+        //
+        // `weight` is assumed FROZEN (LoRA base weight) — only `input` gets a
+        // gradient (Backward<B, 1>), and the bf16 weight primitive is stashed in
+        // the op state for the backward transpose.
+        #[derive(Debug)]
+        struct MixedLinear;
+
+        impl<B: Backend> Backward<B, 1> for MixedLinear {
+            type State = B::FloatTensorPrimitive;
+
+            fn backward(
+                self,
+                ops: Ops<Self::State, 1>,
+                grads: &mut Gradients,
+                _checkpointer: &mut Checkpointer,
+            ) {
+                let weight_bf16 = ops.state;
+
+                unary::<B, _>(ops.parents, ops.node, grads, |grad| {
+                    let grad_bf16 = B::float_cast(grad, burn_std::FloatDType::BF16);
+                    let weight_t = B::float_transpose(weight_bf16);
+                    let grad_input = B::float_matmul(grad_bf16, weight_t);
+                    // Return the gradient in f32 — never a bf16 graph tensor.
+                    B::float_cast(grad_input, burn_std::FloatDType::F32)
+                });
+            }
+        }
+
+        let weight_bf16 = B::float_cast(weight.primitive, burn_std::FloatDType::BF16);
+        let output = B::float_mixed_linear(input.primitive, weight_bf16.clone());
+
+        match MixedLinear
+            .prepare::<C>([input.node.clone()])
+            .compute_bound()
+            .stateful()
+        {
+            OpsKind::Tracked(prep) => prep.finish(weight_bf16, output),
+            OpsKind::UnTracked(prep) => prep.finish(output),
+        }
+    }
+
     // TODO: Implement float_prod and float_sum
     // https://github.com/tracel-ai/burn/issues/1458
 

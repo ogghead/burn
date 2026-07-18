@@ -1,4 +1,4 @@
-use burn_backend::ops::ModuleOps;
+use burn_backend::ops::{FloatTensorOps, ModuleOps};
 use burn_dispatch::Dispatch;
 
 use crate::{
@@ -459,6 +459,26 @@ pub fn linear<const D: usize>(
         input.primitive.into_float(),
         weight.primitive.into_float(),
         bias.map(|b| b.primitive.into_float()),
+    )))
+}
+
+/// Mixed-precision base linear (musubi AMP): `input @ weight` computed with a
+/// bf16 matmul (bf16 inputs, f32 accumulate) and returned as f32, with gradients
+/// kept in f32 (the autodiff backend confines the bf16 to the op's internal
+/// compute — a bf16 tensor in the graph would round grads and compound across
+/// layers). Bias-free (the FLUX base linears use no bias); add any bias in f32
+/// at the call site. `weight` is `[in, out]` and assumed frozen.
+///
+/// See [`crate::ops::FloatTensorOps::float_mixed_linear`].
+pub fn mixed_linear<const D: usize>(input: Tensor<D>, weight: Tensor<2>) -> Tensor<D> {
+    if D == 1 {
+        let input = input.unsqueeze::<2>();
+        return mixed_linear(input, weight).squeeze_dim(0);
+    }
+
+    Tensor::new(BridgeTensor::Float(Dispatch::float_mixed_linear(
+        input.primitive.into_float(),
+        weight.primitive.into_float(),
     )))
 }
 

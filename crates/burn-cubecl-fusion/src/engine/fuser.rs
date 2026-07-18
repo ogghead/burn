@@ -15,21 +15,6 @@ use burn_std::{
 };
 use cubecl::ir::ElemType;
 
-/// Out-of-band Drop handling. EXPERIMENTAL, DEFAULT OFF: the absorb-into-block
-/// approach is UNSAFE — it bakes per-occurrence drop membership into a cacheable
-/// plan, so a cache hit can free a handle a later plan still references
-/// (burn-ir/handle.rs "Should have handle for tensor" panic, observed in-app
-/// 2026-07-18). It DID reduce fragmentation (in-app explores 549→203) but crashed;
-/// the correct fix keeps drops execution-per-occurrence and out of plan identity.
-/// Opt in with `BURN_FUSION_DROP_OOB=1` for experiments only. Read once and cached.
-fn drop_out_of_band() -> bool {
-    use std::sync::OnceLock;
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| {
-        matches!(std::env::var("BURN_FUSION_DROP_OOB").as_deref(), Ok("1") | Ok("true"))
-    })
-}
-
 /// The base operation fuser that can be used to fuse [all supported fuse operations](FuseOp).
 ///
 ///
@@ -99,23 +84,14 @@ impl OperationFuser<FuseTrace> for TraceOperationFuser {
 
         match op {
             OperationIr::Drop(tensor) => {
+                // NOTE: when `BURN_FUSION_DROP_OOB=1`, Drop ops are intercepted in
+                // burn-fusion's `MultiStream::register` and never reach any fuser —
+                // they are freed out-of-band via a per-queue deferred-free list so
+                // they cannot fragment plan identity (the per-step recompilation
+                // storm). This arm is therefore pristine upstream behaviour, hit only
+                // when the flag is OFF: a Drop on an empty fuser closes it; on a
+                // non-empty fuser it is absorbed into the current trace's dropped set.
                 if self.num_ops == 0 {
-                    // A Drop arriving on an EMPTY fuser used to CLOSE it, which made
-                    // the burn-fusion processor explore that lone Drop as a standalone
-                    // plan (→ drain + reset_relative → the downstream fused blocks get
-                    // re-numbered and recompile). Because Drops (autodiff-temporary
-                    // deallocs) land between blocks at positions that vary each step,
-                    // this fragmented the stream combinatorially — the per-step
-                    // recompilation storm. Instead, record the tensor as dropped
-                    // WITHOUT counting it as a compute op and WITHOUT closing, so it is
-                    // freed out-of-band by the surrounding block's drain and never acts
-                    // as a boundary. `fuse_dropped` only inserts into the trace's
-                    // `dropped` set (no compute op, `num_ops` unchanged), so the block's
-                    // kernel identity is unaffected. Kill-switch: `BURN_FUSION_DROP_OOB=0`.
-                    if drop_out_of_band() {
-                        self.fuser.fuser.fuse_dropped(tensor);
-                        return;
-                    }
                     self.status = FuserStatus::Closed;
                     self.log_closed(op, prev_num_ops, "drop on empty fuser");
                     return;

@@ -23,6 +23,14 @@ pub struct OperationQueue<R: FusionRuntime> {
     pub(crate) converter: OperationConverter,
     pub(crate) operations: Vec<UnfusedOp<R>>,
     pub(crate) variables: HashMap<TensorId, TensorStatus>,
+    /// Tensors whose frontend refcount reached zero (a `Drop` was requested) but
+    /// whose handle can't be freed yet because an enqueued op still references
+    /// them. Only used under `BURN_FUSION_DROP_OOB=1`, where Drop ops are kept
+    /// out of the fusion stream (so they can't fragment plan identity — the
+    /// per-step recompilation storm) and instead freed out-of-band by
+    /// [`drain_queue`](OperationQueue::drain_queue) once no live op references
+    /// them. Empty (and never touched) when the flag is off.
+    pub(crate) dropped: Vec<TensorId>,
 }
 
 impl<R: FusionRuntime> Default for OperationQueue<R> {
@@ -40,7 +48,25 @@ impl<R: FusionRuntime> OperationQueue<R> {
             converter: OperationConverter::default(),
             operations: Vec::new(),
             variables: HashMap::new(),
+            dropped: Vec::new(),
         }
+    }
+
+    /// Returns whether any enqueued (not-yet-drained) operation references the
+    /// given tensor id — i.e. whether the tensor's handle is still needed by a
+    /// pending op on this stream.
+    pub(crate) fn references(&self, id: TensorId) -> bool {
+        self.global
+            .iter()
+            .flat_map(|op| op.nodes())
+            .any(|node| node.id == id)
+    }
+
+    /// Record a tensor whose handle must be freed out-of-band (see [`dropped`]).
+    ///
+    /// [`dropped`]: OperationQueue::dropped
+    pub(crate) fn defer_drop(&mut self, id: TensorId) {
+        self.dropped.push(id);
     }
 
     /// Add a new tensor operation to the queue.

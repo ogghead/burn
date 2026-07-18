@@ -493,4 +493,125 @@ mod tests {
              out-of-band Drops are not freeing (memory creep)"
         );
     }
+
+    /// Permanent regression for the out-of-band drop fix (`BURN_FUSION_DROP_OOB=1`).
+    ///
+    /// The exact adversarial case that crashed the earlier absorb-into-block
+    /// approach: the SAME fusable compute graph, whose plan is first cached while
+    /// N throwaway-tensor Drops are interleaved, is then hit when a DIFFERENT
+    /// number M != N of Drops is interleaved. The old approach baked per-occurrence
+    /// drop membership into the cached plan, so a cache hit freed a handle a later
+    /// plan still referenced (burn-ir/handle.rs "Should have handle for tensor").
+    ///
+    /// Under the fix, Drops never enter the fusion stream, so the compute plan is
+    /// drop-free and identical regardless of drop count → cache hits are safe by
+    /// construction. This test drives BOTH build/hit orderings (cache built with a
+    /// high drop count then hit with lower, and vice-versa) and asserts, at every
+    /// interleaved count: no panic, correct fused output, and no leaked handles.
+    ///
+    /// Run on GPU 0 with the flag on (read-once-cached, so run in isolation):
+    ///
+    /// ```text
+    /// CUDA_VISIBLE_DEVICES=0 BURN_FUSION_DROP_OOB=1 cargo test -p burn-cuda \
+    ///   --release fused_drop_count_interleaving -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "needs a CUDA GPU + BURN_FUSION_DROP_OOB=1; run explicitly on GPU 0"]
+    fn fused_drop_count_interleaving() {
+        use burn_backend::ops::FloatTensorOps;
+        use burn_backend::{Scalar, TensorData};
+
+        assert!(
+            burn_fusion::stream::drop_out_of_band(),
+            "run this regression with BURN_FUSION_DROP_OOB=1 (and in isolation, since \
+             the flag is read-once-cached): it validates the out-of-band drop path"
+        );
+
+        type B = Cuda;
+        let device: CudaDevice = Default::default();
+        let (m, k, n) = (256usize, 256usize, 256usize);
+        let a = B::float_from_data(TensorData::new(vec![0.01f32; m * k], vec![m, k]), &device);
+        let w = B::float_from_data(TensorData::new(vec![0.01f32; k * n], vec![k, n]), &device);
+        let bias = B::float_from_data(TensorData::new(vec![0.5f32; m * n], vec![m, n]), &device);
+
+        // Same fusable compute (matmul → add → mul → add) every call, with
+        // `drop_count` throwaway temporaries created and dropped at interleaved
+        // positions among the chain. The compute result is independent of how many
+        // junk temporaries are dropped: matmul(0.01·[256]·0.01)=0.0256; +0.5=0.5256;
+        // ·1.5=0.7884; +0.5=1.2884.
+        let expected = 1.2884_f32;
+        let step = |drop_count: usize| {
+            // Up to 4 throwaway temporaries, each an actual GPU allocation. Taking
+            // a slot drops that temporary, enqueuing an `OperationIr::Drop` at that
+            // exact position in the stream (mimics autodiff temp dealloc order).
+            let mut junk = Vec::new();
+            for _ in 0..drop_count {
+                junk.push(Some(B::float_add(a.clone(), a.clone())));
+            }
+
+            if let Some(s) = junk.get_mut(0) {
+                s.take();
+            }
+            let out = B::float_matmul(a.clone(), w.clone());
+            if let Some(s) = junk.get_mut(1) {
+                s.take();
+            }
+            let out = B::float_add(out, bias.clone());
+            if let Some(s) = junk.get_mut(2) {
+                s.take();
+            }
+            let out = B::float_mul_scalar(out, Scalar::Float(1.5));
+            if let Some(s) = junk.get_mut(3) {
+                s.take();
+            }
+            let out = B::float_add(out, bias.clone());
+            drop(junk); // free any not yet dropped
+            let data = cubecl::future::block_on(B::float_into_data(out)).unwrap();
+            data.to_vec::<f32>().unwrap()[0]
+        };
+
+        // Two phases exercise BOTH cache orderings on a shared plan store:
+        //  - Phase 1 builds the plan on the FIRST call with a HIGH drop count (4),
+        //    then hits it with progressively LOWER counts (3,2,1,0).
+        //  - Phase 2 continues on the same store starting LOW (0) then going HIGH
+        //    (1,2,3,4), i.e. hits with counts both below and above whatever built
+        //    the cached plan.
+        let (before_bytes, _, _) = device_memory_usage(&device).unwrap_or((0, 0, 0));
+
+        let check = |count: usize| {
+            let v = step(count);
+            assert!(
+                (v - expected).abs() < 1e-2,
+                "drop_count {count}: fused result {v} != expected {expected} — a cache \
+                 hit with a different drop count corrupted the compute (or freed a live \
+                 handle)"
+            );
+        };
+
+        for count in [4usize, 3, 2, 1, 0] {
+            check(count);
+        }
+        for count in [0usize, 1, 2, 3, 4] {
+            check(count);
+        }
+        // Repeat the full sweep several times to catch any slow per-iteration leak.
+        for _ in 0..4 {
+            for count in [4usize, 0, 3, 1, 2] {
+                check(count);
+            }
+        }
+
+        let (after_bytes, _, _) = device_memory_usage(&device).unwrap_or((0, 0, 0));
+        println!(
+            "DROP_COUNT_INTERLEAVING ok (no panic, correct at every count, both orderings) \
+             | live bytes {before_bytes}→{after_bytes}"
+        );
+        // Every dropped throwaway must be freed regardless of count/position → the
+        // live working set must not grow across the sweeps.
+        assert!(
+            after_bytes <= before_bytes + 8 * 1024 * 1024,
+            "live device memory grew {before_bytes}→{after_bytes} across the interleaving \
+             sweeps — out-of-band Drops leaked (a dropped handle was not freed)"
+        );
+    }
 }

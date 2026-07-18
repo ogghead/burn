@@ -8,6 +8,44 @@ use crate::{FusionRuntime, UnfusedOp};
 use burn_ir::{HandleContainer, OperationIr, TensorId};
 use hashbrown::{HashMap, HashSet};
 
+/// Out-of-band Drop handling (EXPERIMENTAL, DEFAULT OFF).
+///
+/// When enabled, `Drop` operations are never enqueued into a stream's fusion
+/// queue. Instead the dropped tensor's handle is freed out-of-band — immediately
+/// if no pending op still references it, otherwise deferred to the home stream's
+/// next drain (see [`OperationQueue::dropped`](super::queue::OperationQueue)).
+///
+/// # Why
+///
+/// Autodiff temporary deallocations register `Drop` ops that land at *varying*
+/// positions in the relative op stream every training step. Because plan identity
+/// is the relative op subsequence, those position-varying drops fragment
+/// otherwise-identical compute graphs into distinct plans → per-step NVRTC
+/// recompilation storm. Keeping drops out of the stream makes plan identity
+/// drop-free and stable, and — crucially — means no drop membership is ever baked
+/// into a cacheable plan (the earlier absorb-into-block approach did that and
+/// crashed with a stale cached free: burn-ir/handle.rs "Should have handle").
+///
+/// Read once and cached. Opt in with `BURN_FUSION_DROP_OOB=1`.
+///
+/// Public so regression tests in dependent crates can assert the mode is active.
+#[cfg(feature = "std")]
+pub fn drop_out_of_band() -> bool {
+    use std::sync::OnceLock;
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        matches!(
+            std::env::var("BURN_FUSION_DROP_OOB").as_deref(),
+            Ok("1") | Ok("true")
+        )
+    })
+}
+
+#[cfg(not(feature = "std"))]
+pub fn drop_out_of_band() -> bool {
+    false
+}
+
 /// Keep track of multiple concurrent lazy streams of operations.
 ///
 /// # Why this exists
@@ -140,6 +178,22 @@ impl<R: FusionRuntime> MultiStream<R> {
         // the queued `Drop` op to actually execute.
         if let OperationIr::Drop(ir) = &repr {
             self.shared_sources.remove(&ir.id);
+
+            // Out-of-band drop (BURN_FUSION_DROP_OOB=1): keep the Drop out of the
+            // fusion stream so it can't fragment plan identity (the per-step
+            // recompilation storm). Free the handle now if no pending op on the
+            // home stream still references the tensor, otherwise defer to that
+            // stream's next drain. Safe: a Drop is registered only when the
+            // frontend refcount hits 0, so no future op can reference this id.
+            if drop_out_of_band() {
+                match self.streams.get_mut(&stream) {
+                    Some(s) if s.queue.references(ir.id) => s.queue.defer_drop(ir.id),
+                    _ => {
+                        handles.remove_handle(ir.id);
+                    }
+                }
+                return;
+            }
         }
 
         self.enqueue_operation(stream, repr, operation, handles);
@@ -230,7 +284,11 @@ impl<R: FusionRuntime> MultiStream<R> {
 
         stream.queue.variables.remove(&ir.id);
 
-        if stream.queue.variables.is_empty() {
+        // Keep the stream alive while it still owes out-of-band drop frees
+        // (BURN_FUSION_DROP_OOB=1); dropping the queue here would leak those
+        // handles. The next drain on this stream sweeps them, after which a
+        // later mark_read can remove it.
+        if stream.queue.variables.is_empty() && stream.queue.dropped.is_empty() {
             self.streams.remove(&id);
         }
 

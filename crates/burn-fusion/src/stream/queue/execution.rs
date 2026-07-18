@@ -107,6 +107,11 @@ impl<R: FusionRuntime> OperationQueue<R> {
                 );
                 self.global.clear();
                 self.reset_relative();
+                // global is now empty, so every pending out-of-band drop is
+                // unreferenced — free them here rather than leaking (consistent
+                // with the in-flight ops' handles being reclaimed by the device
+                // pool drain on the error path).
+                self.sweep_dropped(handles);
                 std::panic::resume_unwind(payload);
             }
         };
@@ -130,6 +135,34 @@ impl<R: FusionRuntime> OperationQueue<R> {
         self.global.drain(0..num_drained);
 
         self.reset_relative();
+        self.sweep_dropped(handles);
+    }
+
+    /// Free the handles of tensors recorded for out-of-band drop
+    /// (`BURN_FUSION_DROP_OOB=1`; see [`OperationQueue::dropped`]) whose last
+    /// referencing op has now drained. A dropped tensor is freed only once no
+    /// remaining op in `global` references it, which guarantees we never free a
+    /// handle a pending op still needs (the handle.rs "Should have handle" panic
+    /// class). `remove_handle` is an idempotent map removal, so if the drain
+    /// above already freed a ReadWrite last-use, this is a no-op. No-op entirely
+    /// when the flag is off (the list stays empty).
+    fn sweep_dropped(&mut self, handles: &mut HandleContainer<R::FusionHandle>) {
+        if self.dropped.is_empty() {
+            return;
+        }
+        self.dropped.retain(|id| {
+            let still_referenced = self
+                .global
+                .iter()
+                .flat_map(|op| op.nodes())
+                .any(|node| node.id == *id);
+            if still_referenced {
+                true
+            } else {
+                handles.remove_handle(*id);
+                false
+            }
+        });
     }
 
     fn reset_relative(&mut self) {

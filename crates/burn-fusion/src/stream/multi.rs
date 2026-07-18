@@ -8,7 +8,7 @@ use crate::{FusionRuntime, UnfusedOp};
 use burn_ir::{HandleContainer, OperationIr, TensorId};
 use hashbrown::{HashMap, HashSet};
 
-/// Out-of-band Drop handling (EXPERIMENTAL, DEFAULT OFF).
+/// Out-of-band Drop handling (DEFAULT ON — identity-verified).
 ///
 /// When enabled, `Drop` operations are never enqueued into a stream's fusion
 /// queue. Instead the dropped tensor's handle is freed out-of-band — immediately
@@ -26,7 +26,10 @@ use hashbrown::{HashMap, HashSet};
 /// into a cacheable plan (the earlier absorb-into-block approach did that and
 /// crashed with a stale cached free: burn-ir/handle.rs "Should have handle").
 ///
-/// Read once and cached. Opt in with `BURN_FUSION_DROP_OOB=1`.
+/// DEFAULT ON as of the identity-verified rollout (in-app: storm collapsed
+/// 530→frozen, pool flat, LoRA identity 0.5746 vs 0.5239 baseline). The
+/// kill-switch is `BURN_FUSION_DROP_OOB=0` (or `false`), which restores the
+/// legacy in-stream Drop path. Read once and cached.
 ///
 /// Public so regression tests in dependent crates can assert the mode is active.
 #[cfg(feature = "std")]
@@ -34,9 +37,9 @@ pub fn drop_out_of_band() -> bool {
     use std::sync::OnceLock;
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| {
-        matches!(
+        !matches!(
             std::env::var("BURN_FUSION_DROP_OOB").as_deref(),
-            Ok("1") | Ok("true")
+            Ok("0") | Ok("false")
         )
     })
 }

@@ -50,6 +50,31 @@ fn explore_trace(relative: &[OperationIr]) {
         "[EXPLORE_TRACE] relhash={relhash:016x} ops={} new={is_new} distinct_plans={distinct} total_explores={count}",
         relative.len()
     );
+
+    // `BURN_FUSION_EXPLORE_DUMP=N`: print the full Debug of the relative op
+    // sequence for the first N SINGLE-OP (`ops=1`) explorations — the ones with
+    // unique-forever relhashes. Spanning >1 step, diffing two same-structure
+    // dumps reveals which field leaks a globally-varying value into the relative
+    // form (the `new=true`-forever cause).
+    static DUMP_N: OnceLock<u64> = OnceLock::new();
+    let dump_n = *DUMP_N.get_or_init(|| {
+        std::env::var("BURN_FUSION_EXPLORE_DUMP")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(0)
+    });
+    if dump_n > 0 && relative.len() == 1 {
+        static DUMPED: OnceLock<Mutex<u64>> = OnceLock::new();
+        let n = {
+            let m = DUMPED.get_or_init(|| Mutex::new(0));
+            let mut m = m.lock().unwrap();
+            *m += 1;
+            *m
+        };
+        if n <= dump_n {
+            eprintln!("[EXPLORE_DUMP #{n} relhash={relhash:016x}] {relative:?}");
+        }
+    }
 }
 
 #[cfg(not(feature = "std"))]

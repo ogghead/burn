@@ -49,6 +49,112 @@ pub fn drop_out_of_band() -> bool {
     false
 }
 
+/// Diagnostic (env-gated by `BURN_FUSION_ARITH_DUMP=N`) for the residual-bf16
+/// step-time round: catalogue elementwise / cast float operations by
+/// `(variant, dtype, input dtypes, output shape)` as they are registered —
+/// i.e. BEFORE any fusion decision, so it sees the UNFUSED f32 binops (the
+/// census population this round targets) as well as the fused ones, and its
+/// per-signature counts equal real per-op launch counts.
+///
+/// Purpose: classify the f32 elementwise census (binop / scalar / unary /
+/// cast) as residual-stream (bf16-convertible: last-dim ~3072 / img-txt token
+/// shapes) vs intrinsically-f32 (loss / v_target / sigma: scalar / tiny
+/// shapes). Shape / movement / init ops are excluded on purpose — those are
+/// the ops that drowned the `ops == 1` `EXPLORE_DUMP` and are unfusable by
+/// design regardless.
+///
+/// Prints each new signature once on first sight (capped at `N`) and a full
+/// count-sorted census every `BURN_FUSION_ARITH_CENSUS` registrations
+/// (default 20000). Zero cost when the env var is unset.
+#[cfg(feature = "std")]
+fn arith_dump(repr: &OperationIr) {
+    use burn_ir::BaseOperationIr;
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+
+    static N: OnceLock<u64> = OnceLock::new();
+    let n_cap = *N.get_or_init(|| {
+        std::env::var("BURN_FUSION_ARITH_DUMP")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(0)
+    });
+    if n_cap == 0 {
+        return;
+    }
+
+    // Variant name only: the leading identifier of the inner op's Debug, before
+    // any `(`/`{`/space — avoids hand-maintaining a match over every variant.
+    fn variant(dbg: String) -> String {
+        dbg.split(['(', ' ', '{'])
+            .next()
+            .unwrap_or("?")
+            .to_string()
+    }
+
+    let sig = match repr {
+        OperationIr::NumericFloat(dtype, op) => {
+            Some(format!("NumF/{} dtype={dtype:?}", variant(format!("{op:?}"))))
+        }
+        OperationIr::Float(dtype, op) => {
+            Some(format!("Float/{} dtype={dtype:?}", variant(format!("{op:?}"))))
+        }
+        OperationIr::BaseFloat(BaseOperationIr::Cast(c)) => {
+            Some(format!("Cast {:?}->{:?}", c.input.dtype, c.out.dtype))
+        }
+        _ => None,
+    };
+    let Some(mut sig) = sig else {
+        return;
+    };
+
+    // Input dtypes reveal mixed f32×bf16 populations; output shape is the
+    // residual-vs-intrinsic discriminator.
+    let ins: Vec<String> = repr.inputs().map(|t| format!("{:?}", t.dtype)).collect();
+    if !ins.is_empty() {
+        sig.push_str(&format!(" in=[{}]", ins.join(",")));
+    }
+    if let Some(out) = repr.outputs().next() {
+        sig.push_str(&format!(" out={:?}", out.shape));
+    }
+
+    static STATE: OnceLock<Mutex<(HashMap<String, u64>, u64)>> = OnceLock::new();
+    let state = STATE.get_or_init(|| Mutex::new((HashMap::new(), 0)));
+    let mut guard = state.lock().unwrap();
+    let (counts, total) = &mut *guard;
+    *total += 1;
+    let total_now = *total;
+    let distinct_before = counts.len() as u64;
+    let entry = counts.entry(sig.clone()).or_insert(0);
+    let first_seen = *entry == 0;
+    *entry += 1;
+    if first_seen && distinct_before < n_cap {
+        eprintln!("[ARITH_DUMP #{} {sig}]", distinct_before + 1);
+    }
+
+    static CENSUS_EVERY: OnceLock<u64> = OnceLock::new();
+    let every = *CENSUS_EVERY.get_or_init(|| {
+        std::env::var("BURN_FUSION_ARITH_CENSUS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(20000)
+    });
+    if every > 0 && total_now % every == 0 {
+        let mut rows: Vec<(&String, &u64)> = counts.iter().collect();
+        rows.sort_by(|a, b| b.1.cmp(a.1));
+        eprintln!(
+            "[ARITH_CENSUS total={total_now} distinct={}]",
+            counts.len()
+        );
+        for (i, (s, c)) in rows.iter().take(80).enumerate() {
+            eprintln!("  [{i:>3}] {c:>8}  {s}");
+        }
+    }
+}
+
+#[cfg(not(feature = "std"))]
+fn arith_dump(_repr: &OperationIr) {}
+
 /// Keep track of multiple concurrent lazy streams of operations.
 ///
 /// # Why this exists
@@ -227,6 +333,8 @@ impl<R: FusionRuntime> MultiStream<R> {
             }
         }
 
+        arith_dump(&repr);
+
         self.enqueue_operation(stream, repr, operation, handles);
 
         #[cfg(feature = "memory-checks")]
@@ -377,5 +485,63 @@ impl<R: FusionRuntime> Stream<R> {
             queue: OperationQueue::new(),
             cursor: 0,
         }
+    }
+}
+
+#[cfg(all(test, feature = "std"))]
+mod arith_dump_tests {
+    use super::arith_dump;
+    use burn_backend::{DType, Shape};
+    use burn_ir::{
+        BaseOperationIr, BinaryOpIr, CastOpIr, NumericOperationIr, OperationIr, ShapeOpIr,
+        TensorId, TensorIr, TensorStatus,
+    };
+
+    fn tensor(id: u64, shape: &[usize], dtype: DType) -> TensorIr {
+        TensorIr {
+            id: TensorId::new(id),
+            shape: Shape::from(shape.to_vec()),
+            status: TensorStatus::ReadOnly,
+            dtype,
+        }
+    }
+
+    // Not an oracle — a format smoke check so the one GPU-1 capture window is
+    // not spent discovering a broken diagnostic. Run with --nocapture to eyeball.
+    #[test]
+    fn arith_dump_classifies_and_ignores() {
+        // SAFETY: single-threaded test setting env before the first arith_dump
+        // call in this process; OnceLock reads it exactly once.
+        unsafe {
+            std::env::set_var("BURN_FUSION_ARITH_DUMP", "50");
+            std::env::set_var("BURN_FUSION_ARITH_CENSUS", "3");
+        }
+
+        // Residual-class f32 add (last-dim 3072) — must be catalogued.
+        let residual_add = OperationIr::NumericFloat(
+            DType::F32,
+            NumericOperationIr::Add(BinaryOpIr {
+                lhs: tensor(0, &[1, 4608, 3072], DType::F32),
+                rhs: tensor(1, &[1, 4608, 3072], DType::F32),
+                out: tensor(2, &[1, 4608, 3072], DType::F32),
+            }),
+        );
+        // Boundary cast f32 -> bf16 — must be catalogued with direction.
+        let cast = OperationIr::BaseFloat(BaseOperationIr::Cast(CastOpIr {
+            input: tensor(3, &[1, 4608, 3072], DType::F32),
+            out: tensor(4, &[1, 4608, 3072], DType::BF16),
+        }));
+        // A shape op — must be IGNORED (returns None).
+        let reshape = OperationIr::BaseFloat(BaseOperationIr::Reshape(ShapeOpIr {
+            input: tensor(5, &[1, 4608, 3072], DType::F32),
+            out: tensor(6, &[4608, 3072], DType::F32),
+        }));
+
+        // Feed enough to trip the count-sorted census (CENSUS=3).
+        arith_dump(&residual_add);
+        arith_dump(&cast);
+        arith_dump(&reshape);
+        arith_dump(&residual_add);
+        arith_dump(&reshape);
     }
 }
